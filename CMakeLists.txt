@@ -104,6 +104,8 @@ target_link_options(EaglePatchPlusAC1 PRIVATE
 add_library(EaglePatchPlusAC2 SHARED
     ${SHARED_SOURCES}
     EaglePatch/src/ac2.cpp
+    EaglePatch/src/ac2_shadow_cascades.cpp
+    EaglePatch/src/ac2_shadow_cascades.h
 )
 
 target_include_directories(EaglePatchPlusAC2 PRIVATE ${SHARED_INCLUDE_DIRS})
@@ -160,6 +162,16 @@ if(BUILD_TESTING)
     target_include_directories(EaglePatchTests PRIVATE EaglePatch/shared patcher)
     target_compile_definitions(EaglePatchTests PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS NOMINMAX)
     add_test(NAME EaglePatchTests COMMAND EaglePatchTests)
+    add_executable(ShadowCascadeTests
+        tests/test_shadow_cascades.cpp
+        EaglePatch/src/ac2_shadow_cascades.cpp
+        EaglePatch/shared/logger.cpp
+        patcher/patcher.cpp
+    )
+    target_include_directories(ShadowCascadeTests PRIVATE patcher)
+    target_compile_definitions(ShadowCascadeTests PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS NOMINMAX)
+    target_compile_options(ShadowCascadeTests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/fp:strict>)
+    add_test(NAME ShadowCascadeTests COMMAND ShadowCascadeTests)
 endif()
 # ------------------------------------------------------------------------------
 # Target: Package Release
