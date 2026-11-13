@@ -4,6 +4,7 @@ Plugin version: 1.5.2
 
 Features:
 - Improved shadow map size from 1024 to 4096 (only when shadow quality is maxed out in game's settings; can be disabled in ini)
+- Configurable shadow cascade distances (ShadowCascadeDistanceMultiplier, default 6) on the verified Steam Digital UPlay executable
 - Draw distance maxed out for buildings, peds and flags (can be disabled in ini)
 - Added high-precision framerate limiter (FramerateLimit) with optimized CPU sleep thresholds to prevent physics glitches on high refresh rate monitors (>60 FPS)
 - Added borderless windowed mode option (BorderlessWindow) with frame refresh in ini (currently supported on AC2 Digital UPlay)
@@ -28,6 +29,11 @@ Installation:
 3. Put dinput8.dll from Ultimate ASI Loader into your Assassin's Creed II directory
 4. Extract the contents of EaglePatch+AC2.zip directly into your Assassin's Creed II directory
 5. Done! You may want to check scripts/EaglePatchAC2.ini for any settings you want to enable or disable
+
+Shadow cascade distances:
+Set ShadowCascadeDistanceMultiplier in scripts/EaglePatchAC2.ini to an integer from 2 through 6 (default 6), or 1 for stock distances. The three inner boundaries move farther from the camera; the outer shadow limit stays unchanged. For example, 4 / 16 / 64 / 400 becomes 24 / 96 / 384 / 400 at 6x. A closer outer limit reduces the multiplier automatically to preserve split ordering. Shadow-map detail is spread over a larger area; cascade transitions are moved, not removed.
+This does not change ImproveShadowMapResolution or the game's shadow quality. High game shadows are required for the separate 4096 shadow-map option.
+Only the verified Steam Digital UPlay layout (PE timestamp 0x5925BA62, image size 0x2190000 and matching runtime code) is patched. Other layouts retain the remaining EaglePatch fixes. Remove scripts/AC2ShadowRadius.asi when upgrading from the standalone radius patch. EnableLogging=1 records installation/skip reasons and the first observed split distances at plugin shutdown.
 
 Supported game versions:
 - Digital UPlay

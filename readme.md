@@ -62,6 +62,7 @@ EaglePatch+AC2 is an ASI plugin that fixes a number of issues in Assassin's Cree
 
 ## Features
 - Improved shadow map size from 1024 to 4096 (only when shadow quality is maxed out in game's settings; can be disabled in ini)
+- Configurable shadow cascade distances (`ShadowCascadeDistanceMultiplier`, default 6) to move the visible shadow-detail transitions farther away on the verified Steam Digital UPlay layout
 - Draw distance maxed out for buildings, peds and flags (can be disabled in ini)
 - Added high-precision framerate limiter (`FramerateLimit`) with optimized CPU sleep thresholds to prevent physics glitches on high refresh rate monitors (>60 FPS)
 - Added borderless windowed mode option (`BorderlessWindow`) with frame refresh in ini (currently supported on AC2 Digital UPlay)
@@ -86,6 +87,14 @@ Note: switching controls layout in game settings has no effect anymore, if you d
 3. Put dinput8.dll from Ultimate ASI Loader into your Assassin's Creed II directory
 4. Extract the contents of EaglePatch+AC2.zip directly into your Assassin's Creed II directory
 5. Done! You may want to check scripts/EaglePatchAC2.ini for any settings you want to enable or disable
+
+## Shadow cascade distances
+
+`ShadowCascadeDistanceMultiplier=6` in `scripts/EaglePatchAC2.ini` extends the three inner shadow cascade distances by up to 6x. Use an integer from 2 to 6, or 1 to restore the game's distances. On a map with stock splits of 4 / 16 / 64 / 400, 6x gives 24 / 96 / 384 / 400. The outer shadow limit stays unchanged; closer outer limits automatically reduce the multiplier to keep the cascades ordered. This moves the detail transitions farther away, but spreads each shadow map over more ground and does not remove the engine's cascade transitions.
+
+This setting is independent of `ImproveShadowMapResolution` and the game's shadow quality. It does not change their settings. Set the game's shadows to High if you also enable the existing 4096 shadow-map option.
+
+The hook requires the verified Steam Digital UPlay executable layout (PE timestamp `0x5925BA62`, image size `0x2190000`) and an exact runtime code signature. Unsupported or already-hooked layouts skip this feature while retaining the other EaglePatch fixes. Remove `scripts/AC2ShadowRadius.asi` when upgrading from the standalone patch so only EaglePatch owns the hook. With `EnableLogging=1`, the log records installation or skip reasons and the first observed split distances when the plugin shuts down.
 
 ## Supported game versions
 - Digital UPlay
