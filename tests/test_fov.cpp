@@ -180,7 +180,7 @@ static const unsigned char signature[] = {
 	0xB8, 0x01, 0x00, 0x00, 0x00, 0xF3, 0x0F, 0x11, 0x89, 0x60, 0x01, 0x00, 0x00
 };
 
-static void TestInstallation()
+static void TestInstallation(float multiplier, bool lockFov)
 {
 	unsigned char* image = static_cast<unsigned char*>(VirtualAlloc(NULL, 0x2190000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	CHECK(image != NULL);
@@ -236,7 +236,7 @@ static void TestInstallation()
 	memcpy(target, signature, sizeof(signature));
 	DWORD oldProtect = 0;
 	CHECK(VirtualProtect(target, 5, PAGE_EXECUTE_READ, &oldProtect) != 0);
-	CHECK(ac2_fov::Install(module, 1.2f));
+	CHECK(ac2_fov::Install(module, multiplier, lockFov));
 	CHECK(target[0] == 0xE9);
 	CHECK(memcmp(target + 5, signature + 5, sizeof(signature) - 5) == 0);
 	uint32_t displacement = 0;
@@ -247,7 +247,7 @@ static void TestInstallation()
 	CHECK(VirtualQuery(target, &memory, sizeof(memory)) == sizeof(memory));
 	CHECK(memory.Protect == PAGE_EXECUTE_READ);
 	CHECK(!ac2_fov::Install(module, 1.5f));
-	CHECK(ac2_fov::detail::multiplier == 1.2f);
+	CHECK(ac2_fov::detail::multiplier == multiplier);
 
 	// Execute the installed jump and the following real engine instructions,
 	// not only a direct call to the hook, with an active and inactive camera.
@@ -257,20 +257,32 @@ static void TestInstallation()
 	memcpy(image + 0x1E10B84, &worldAddress, sizeof(worldAddress));
 	ac2_fov::detail::changes = 0;
 	hookEntry = reinterpret_cast<uintptr_t>(target);
-	const float expected = 0.768f * 1.2f;
-	for (unsigned int i = 0; i < 2; ++i)
+	const float requests[] = {0.768f, 0.4f, 1.2f, 0.02f, 2.0f};
+	for (float request : requests)
 	{
+		camera[0x30 / 4] = Bits(request);
+		const float expected = lockFov ? 0.768f * multiplier :
+			(request < 0.05f || request > 1.5f ? request : request * multiplier);
 		RunCamera(camera);
 		CheckRegisters(camera, expected, true);
-		CHECK(camera[0x30 / 4] == Bits(0.768f));
+		CHECK(camera[0x30 / 4] == Bits(request));
 		CHECK(camera[0x160 / 4] == Bits(expected));
 		CHECK(camera[0x1EC / 4] == 0x10203040);
 	}
+	CHECK(ac2_fov::detail::changes == (lockFov ? 5u : 3u));
+	const float invalid[] = {0.0f, -1.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()};
+	for (float request : invalid)
+	{
+		camera[0x30 / 4] = Bits(request);
+		RunCamera(camera);
+		CheckRegisters(camera, request, true);
+	}
 	handle[0] += 16;
+	camera[0x30 / 4] = Bits(0.4f);
 	RunCamera(camera);
-	CheckRegisters(camera, 0.768f, true);
-	CHECK(camera[0x160 / 4] == Bits(0.768f));
-	CHECK(ac2_fov::detail::changes == 2);
+	CheckRegisters(camera, 0.4f, true);
+	CHECK(camera[0x160 / 4] == Bits(0.4f));
+	CHECK(ac2_fov::detail::changes == (lockFov ? 5u : 3u));
 	VirtualFree(image, 0, MEM_RELEASE);
 }
 
@@ -293,7 +305,9 @@ int main()
 	TestHook(1.6f, 1.2f, 1.6f, false);
 	TestHook(std::numeric_limits<float>::infinity(), 1.2f, std::numeric_limits<float>::infinity(), false);
 	TestHook(std::numeric_limits<float>::quiet_NaN(), 1.2f, std::numeric_limits<float>::quiet_NaN(), false);
-	TestInstallation();
+	TestInstallation(1.2f, false);
+	TestInstallation(1.0f, true);
+	TestInstallation(1.25f, true);
 	ShutdownLogging();
 	if (failures)
 		return 1;

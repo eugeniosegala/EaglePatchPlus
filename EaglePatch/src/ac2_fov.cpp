@@ -16,13 +16,15 @@ float multiplier = 1.0f;
 volatile uint32_t changes = 0;
 float originalFov = 0.0f;
 float scaledFov = 0.0f;
+static bool locked = false;
+// Measured active-camera input during normal gameplay on the verified Steam build.
+static const float gameplayFov = 0.768f;
 static float minFov = 0.05f;
 static float maxFov = 1.5f;
 
 // The engine copies this value into both FOV inputs at camera+0x160/0x16c,
-// then builds the projection and culling data from those inputs. Scale the
-// fresh input, not the camera's persistent desired FOV at +0x30, to retain
-// camera transitions and avoid accumulating the multiplier between frames.
+// then builds the projection and culling data from those inputs. The game
+// retains its requested angle at +0x30 in both camera modes.
 NAKED void Hook()
 {
 	__asm
@@ -45,21 +47,31 @@ NAKED void Hook()
 		cmp ecx, [eax]
 		jne fov_done
 
-		// Keep invalid or unusual engine values untouched, and bound the
-		// adjusted angle away from a degenerate projection.
+		cmp locked, 0
+		je fov_dynamic
+		// A scripted zoom can cross the dynamic mode's normal range. Accept
+		// any positive finite request, preserving invalid camera inputs.
+		movd eax, xmm1
+		test eax, eax
+		jle fov_done
+		cmp eax, 0x7F800000
+		jae fov_done
+		movss xmm1, gameplayFov
+		jmp fov_scale
+
+	fov_dynamic:
 		ucomiss xmm1, minFov
 		jb fov_done
 		ucomiss xmm1, maxFov
 		ja fov_done
-		cmp changes, 0
-		jne fov_scale
-		movss originalFov, xmm1
 	fov_scale:
 		mulss xmm1, multiplier
 		maxss xmm1, minFov
 		minss xmm1, maxFov
 		cmp changes, 0
 		jne fov_count
+		mov eax, [ecx + 0x30]
+		mov originalFov, eax
 		movss scaledFov, xmm1
 	fov_count:
 		inc changes
@@ -71,7 +83,7 @@ NAKED void Hook()
 }
 }
 
-bool Install(HMODULE gameModule, float fovMultiplier)
+bool Install(HMODULE gameModule, float fovMultiplier, bool lockFov)
 {
 	// Check the exponent explicitly: MSVC builds with /fp:fast, where isfinite
 	// and NaN comparisons alone are not a reliable configuration guard.
@@ -82,7 +94,7 @@ bool Install(HMODULE gameModule, float fovMultiplier)
 		LogWarn("FOVMultiplier must be a finite value from 0.5 through 2.0; FOV patch skipped.");
 		return false;
 	}
-	if (fovMultiplier == 1.0f)
+	if (!lockFov && fovMultiplier == 1.0f)
 	{
 		LogInfo("Camera FOV: game's own (multiplier 1.0).");
 		return false;
@@ -121,6 +133,7 @@ bool Install(HMODULE gameModule, float fovMultiplier)
 		return false;
 	}
 	detail::multiplier = fovMultiplier;
+	detail::locked = lockFov;
 	detail::worldPointer = world;
 	detail::continuation = reinterpret_cast<uintptr_t>(target + 5);
 	unsigned char jump[5] = {0xE9, 0, 0, 0, 0};
@@ -135,7 +148,7 @@ bool Install(HMODULE gameModule, float fovMultiplier)
 		LogWarn("FOV patch: protection restore failed; original instruction restored.");
 		return false;
 	}
-	LogInfo("FOVMultiplier: %.3f (active camera only; verified camera code).", fovMultiplier);
+	LogInfo("FOVMultiplier: %.3f (active camera only; %s).", fovMultiplier, lockFov ? "fixed gameplay FOV" : "dynamic FOV");
 	return true;
 }
 
