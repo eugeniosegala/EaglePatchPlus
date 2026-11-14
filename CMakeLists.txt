@@ -115,6 +115,8 @@ add_library(EaglePatchPlusAC2 SHARED
     EaglePatch/src/ac2_ui_scale.cpp
     EaglePatch/src/ac2_ui_scale.h
     EaglePatch/src/ac2_ui_movie.h
+    EaglePatch/src/ac2_highlights.cpp
+    EaglePatch/src/ac2_highlights.h
 )
 
 target_include_directories(EaglePatchPlusAC2 PRIVATE ${SHARED_INCLUDE_DIRS})
@@ -201,6 +203,12 @@ if(BUILD_TESTING)
     target_compile_features(UiScaleTests PRIVATE cxx_std_14)
     target_compile_definitions(UiScaleTests PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS NOMINMAX)
     add_test(NAME UiScaleTests COMMAND UiScaleTests)
+    add_executable(HighlightTests tests/test_highlights.cpp EaglePatch/src/ac2_highlights.cpp
+        EaglePatch/shared/logger.cpp patcher/patcher.cpp)
+    target_include_directories(HighlightTests PRIVATE patcher)
+    target_compile_features(HighlightTests PRIVATE cxx_std_14)
+    target_compile_definitions(HighlightTests PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS NOMINMAX)
+    add_test(NAME HighlightTests COMMAND HighlightTests)
 endif()
 # ------------------------------------------------------------------------------
 # Target: Package Release
