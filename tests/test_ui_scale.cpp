@@ -147,7 +147,7 @@ static void ComponentTests()
 static void TransformTests()
 {
 	struct Case { const char* name; float x, y; };
-	const Case cases[] = {{"TitleMenu",320,180},{"PauseMenu",320,180},{"HudMiniMap",640,360},
+	const Case cases[] = {{"HudMiniMap",640,360},
 		{"HudControlsManager",640,0},{"HudHealthBar",0,0},{"HudMissionState",0,0},{"AFSMessageDisplay",320,180},{"HudMoneyComponent",0,360}};
 	for (const auto& c : cases)
 	{
@@ -158,31 +158,45 @@ static void TransformTests()
 		auto once = root; CHECK(Execute(actions,root)); CHECK(root == once);
 	}
 }
+static void MenuTests()
+{
+	const char* stock[] = {"TitleMenu", "PauseMenu", "MapMenu", "MainMenu", "InventoryMenu", "DatabaseMenu",
+		"MissionActivatorMenu", "SystemMessageDisplay", "HudIconManager", "UnknownFireItem"};
+	const Bytes original = Movie();
+	for (const auto* type : stock)
+	{
+		Bytes source = original, output = {0x42};
+		CHECK(!ShouldScale(type)); CHECK(!Patch(source.data(),source.size(),0.5f,type,output));
+		CHECK(output.empty() && source == original);
+	}
+	CHECK(!ShouldScale(nullptr));
+	CHECK(ShouldScale("HudHealthBar") && ShouldScale("HudMiniMap") && ShouldScale("AFSMessageDisplay") && ShouldScale("MultiComponentShowingFireItem"));
+}
 static void ParserTests()
 {
-	Bytes b = Movie(), out; CHECK(Patch(b.data(),b.size(),0.5f,"TitleMenu",out));
+	Bytes b = Movie(), out; CHECK(Patch(b.data(),b.size(),0.5f,"HudMiniMap",out));
 	CHECK(U32(out.data()+4) == out.size()); CHECK(b == Movie());
-	CHECK(!Patch(out.data(),out.size(),0.5f,"TitleMenu",b)); CHECK(b.empty()); b = Movie();
+	CHECK(!Patch(out.data(),out.size(),0.5f,"HudMiniMap",b)); CHECK(b.empty()); b = Movie();
 	const size_t frame = b.size()-4, added = out.size()-b.size();
 	CHECK(U16(out.data()+frame) == ((12<<6)|63)); CHECK(U32(out.data()+frame+2) == added-6);
 	Bytes actions(out.begin()+frame+6,out.begin()+frame+added);
 	std::map<std::string,float> root = {{"_xscale",100},{"_yscale",100}};
-	CHECK(Execute(actions,root)); CHECK(root["_x"] == 320 && root["_y"] == 180);
+	CHECK(Execute(actions,root)); CHECK(root["_x"] == 640 && root["_y"] == 360);
 	CHECK(!memcmp(out.data()+8,b.data()+8,frame-8)); CHECK(!memcmp(out.data()+frame+added,b.data()+frame,b.size()-frame));
-	for (size_t n = 0; n < b.size(); ++n) { Bytes truncated(b.begin(),b.begin()+n); if (n>=8) Length(truncated); CHECK(!Patch(truncated.data(),n,0.5f,"TitleMenu",out)); }
+	for (size_t n = 0; n < b.size(); ++n) { Bytes truncated(b.begin(),b.begin()+n); if (n>=8) Length(truncated); CHECK(!Patch(truncated.data(),n,0.5f,"HudMiniMap",out)); }
 	CHECK(!Patch(b.data(),b.size(),0.5f,"HudIconManager",out));
-	CHECK(!Patch(b.data(),b.size(),1,"TitleMenu",out)); CHECK(!Patch(nullptr,b.size(),0.5f,"TitleMenu",out));
+	CHECK(!Patch(b.data(),b.size(),1,"HudMiniMap",out)); CHECK(!Patch(nullptr,b.size(),0.5f,"HudMiniMap",out));
 	CHECK(!ValidScale(0.49f)); CHECK(!ValidScale(1.1f)); CHECK(!ValidScale(std::numeric_limits<float>::quiet_NaN()));
 	CHECK(!ValidScale(std::numeric_limits<float>::infinity()));
-	Bytes bad=b; bad[0]='C'; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
-	bad=b; bad[3]=11; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
-	bad=b; bad[8]=0; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
-	bad=b; bad[23]=8; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out)); // AS3.
-	bad=b; bad.back()=1; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
-	bad=b; bad[frame]=0x41; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out)); // ShowFrame payload.
-	bad=b; bad.insert(bad.end(),3,0); Length(bad); CHECK(Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
-	bad.back()=1; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
-	bad=b; memcpy(bad.data(),"FWS",3); CHECK(Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
+	Bytes bad=b; bad[0]='C'; CHECK(!Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out));
+	bad=b; bad[3]=11; CHECK(!Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out));
+	bad=b; bad[8]=0; CHECK(!Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out));
+	bad=b; bad[23]=8; CHECK(!Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out)); // AS3.
+	bad=b; bad.back()=1; CHECK(!Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out));
+	bad=b; bad[frame]=0x41; CHECK(!Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out)); // ShowFrame payload.
+	bad=b; bad.insert(bad.end(),3,0); Length(bad); CHECK(Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out));
+	bad.back()=1; CHECK(!Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out));
+	bad=b; memcpy(bad.data(),"FWS",3); CHECK(Patch(bad.data(),bad.size(),0.5f,"HudMiniMap",out));
 }
 #ifdef _WIN32
 static void HookTests()
@@ -201,7 +215,7 @@ static void HookTests()
 	const uintptr_t guards[]={0x13ac405,0x13b2dd0,0x13b28b0};
 	for (auto rva:guards) { game[rva]^=1; CHECK(!ac2_ui::Install(reinterpret_cast<HMODULE>(game),0.5f)); game[rva]^=1; CHECK(game[0x13b2dd0]==0x83); }
 	// Complete the displaced native prologues with executable status/stack-preservation stubs.
-	const unsigned char finishLoad[]={0x8b,0x44,0x24,0x18,0x8b,0x54,0x24,0x24,0x89,0x10,0x5e,0x5b,0x83,0xc4,0x0c,0xc2,0x10,0};
+	const unsigned char finishLoad[]={0x8b,0x54,0x24,0x1c,0x89,0x51,0x58,0x8b,0x44,0x24,0x18,0x8b,0x54,0x24,0x24,0x89,0x10,0x5e,0x5b,0x83,0xc4,0x0c,0xc2,0x10,0};
 	const unsigned char finishDestroy[]={0x5f,0x5e,0x5d,0x5b,0x59,0xc3};
 	memcpy(game+0x13b2dd0+9,finishLoad,sizeof(finishLoad)); memcpy(game+0x13b28b0+5,finishDestroy,sizeof(finishDestroy));
 	CHECK(ac2_ui::Install(reinterpret_cast<HMODULE>(game),0.5f)); CHECK(game[0x13b2dd0]==0xe9 && game[0x13b28b0]==0xe9);
@@ -211,13 +225,20 @@ static void HookTests()
 	item[0]=reinterpret_cast<uintptr_t>(table); table[4]=reinterpret_cast<uintptr_t>(game+0x1000);
 	const uintptr_t slot=reinterpret_cast<uintptr_t>(game+0x1c6b000),tp=reinterpret_cast<uintptr_t>(type);
 	game[0x1000]=0xa1; memcpy(game+0x1001,&slot,4); game[0x1005]=0xc3; memcpy(game+0x1c6b000,&tp,4);
-	type[8]=reinterpret_cast<uintptr_t>("TitleMenu");
+	type[8]=reinterpret_cast<uintptr_t>("HudHealthBar");
 	Load entry=reinterpret_cast<Load>(game+0x13b2dd0); Destroy dispose=reinterpret_cast<Destroy>(game+0x13b28b0);
 	Bytes b=Movie(); int status=-2;
 	CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status && status==0); CHECK(buffers && retained==buffers->data.size());
 	size_t once=retained; CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status); CHECK(retained==once);
 	CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),uint32_t(-1))==&status && status==-1); CHECK(retained==once*2);
 	CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status); CHECK(retained==once);
+	for (const auto* stock : {"TitleMenu", "PauseMenu", "MapMenu", "SystemMessageDisplay"})
+	{
+		type[8]=reinterpret_cast<uintptr_t>(stock);
+		CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status);
+		CHECK(!buffers && retained==0 && state[22]==reinterpret_cast<uintptr_t>(b.data()));
+	}
+	type[8]=reinterpret_cast<uintptr_t>("HudHealthBar");
 	CHECK(entry(state,&status,nullptr,0,0)==&status); CHECK(!buffers && retained==0);
 	entry(state,&status,b.data(),(uint32_t)b.size(),0); dispose(state); CHECK(!buffers && retained==0);
 	VirtualFree(reinterpret_cast<void*>(load),0,MEM_RELEASE); VirtualFree(reinterpret_cast<void*>(destroy),0,MEM_RELEASE);
@@ -226,11 +247,11 @@ static void HookTests()
 #endif
 int main(int argc, char** argv)
 {
-	TransformTests(); ParserTests(); ComponentTests(); MessageTests();
+	TransformTests(); ParserTests(); ComponentTests(); MessageTests(); MenuTests();
 #ifdef _WIN32
 	HookTests();
 #endif
-	if (argc>=2) { std::ifstream f(argv[1],std::ios::binary); Bytes b((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>()),out; CHECK(Patch(b.data(),b.size(),0.5f,argc>2?argv[2]:"TitleMenu",out)); printf("Real movie: %u -> %u bytes\n",(unsigned)b.size(),(unsigned)out.size()); }
+	if (argc>=2) { std::ifstream f(argv[1],std::ios::binary); Bytes b((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>()),out; CHECK(Patch(b.data(),b.size(),0.5f,argc>2?argv[2]:"HudMiniMap",out)); printf("Real movie: %u -> %u bytes\n",(unsigned)b.size(),(unsigned)out.size()); }
 	if (failures) return 1;
 	puts("UI scale tests passed: movie validation, AVM1 transforms, corner anchors, replay guard and native hook lifetime."); return 0;
 }

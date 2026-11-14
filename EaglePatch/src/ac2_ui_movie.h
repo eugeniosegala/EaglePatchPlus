@@ -160,12 +160,20 @@ inline void Anchor(const char* name, float& x, float& y)
 	else if (strstr(name, "HudHealthBar") || strstr(name, "HudMissionState")) { x = 0; y = 0; }
 	else if (strstr(name, "HudMoney")) { x = 0; y = 1; }
 }
+inline bool ShouldScale(const char* type)
+{
+	// Only verified gameplay HUD owners opt in. Full-screen menus, dialogs,
+	// world markers and unknown UI types always receive their original stream.
+	static const char* const hud[] = {"HudHealthBar", "HudMiniMap", "HudMissionState", "HudControlsManager",
+		"HudMoneyComponent", "MultiComponentShowingFireItem", "AFSMessageDisplay"};
+	if (type) for (const auto* name : hud) if (!strcmp(type, name)) return true;
+	return false;
+}
 inline bool Patch(const unsigned char* data, size_t size, float scale, const char* type, Bytes& output)
 {
 	output.clear();
-	if (!data || !type || !ValidScale(scale) || scale == 1 || size < 16 || size > 16 * 1024 * 1024 ||
-		(memcmp(data, "UEF", 3) && memcmp(data, "FWS", 3)) || data[3] < 5 || data[3] > 10 || U32(data + 4) != size ||
-		strstr(type, "HudIconManager")) return false;
+	if (!data || !ShouldScale(type) || !ValidScale(scale) || scale == 1 || size < 16 || size > 16 * 1024 * 1024 ||
+		(memcmp(data, "UEF", 3) && memcmp(data, "FWS", 3)) || data[3] < 5 || data[3] > 10 || U32(data + 4) != size) return false;
 	const unsigned bits = data[8] >> 3;
 	if (!bits || bits > 30) return false;
 	const size_t rectBytes = (5 + 4 * bits + 7) / 8;

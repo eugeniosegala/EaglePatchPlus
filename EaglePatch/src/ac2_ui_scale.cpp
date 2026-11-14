@@ -74,7 +74,7 @@ int* __fastcall LoadHook(void* state, void*, int* status, const void* data, uint
 	char name[64] = {};
 	// The engine holds its per-player lock throughout this internal load, including deferred menus.
 	if (Read(reinterpret_cast<uintptr_t>(state), &player, 4) && Read(reinterpret_cast<uintptr_t>(state) + 0x50, &bridge, 4) && bridge >= 8 &&
-		Read(bridge - 8 + 0x64, &itemPlayer, 4) && itemPlayer == player && TypeName(reinterpret_cast<void*>(bridge - 8), name) &&
+		Read(bridge - 8 + 0x64, &itemPlayer, 4) && itemPlayer == player && TypeName(reinterpret_cast<void*>(bridge - 8), name) && movie::ShouldScale(name) &&
 		size <= 16 * 1024 * 1024 && ac2_image::IsReadable(data, size))
 	{
 		pending = new(std::nothrow) Buffer{state, {}, nullptr};
