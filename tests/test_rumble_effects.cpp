@@ -62,13 +62,13 @@ static void Movement()
 	tracker.Update(At(100, 6, 10));
 	tracker.Update(At(200, 6, 9));
 	tracker.Update(At(300, 6, 7));
-	CHECK(tracker.Update(At(400, 4, 6)).effect == Effect::None);
-	CHECK(tracker.Update(At(500, 4, 6)).effect == Effect::Landing);
+	CHECK(tracker.Update(At(400, 4, 6)).effect == Effect::Landing);
+	CHECK(tracker.Update(At(500, 4, 6)).effect == Effect::None);
 	// Small hops produce a distinct light contact, rather than a heavy landing.
 	tracker.Update(At(600, 6, 6.4f));
 	tracker.Update(At(700, 6, 6.1f));
-	CHECK(tracker.Update(At(800, 4, 6)).effect == Effect::None);
-	CHECK(tracker.Update(At(900, 4, 6)).effect == Effect::SoftLanding);
+	CHECK(tracker.Update(At(800, 4, 6)).effect == Effect::SoftLanding);
+	CHECK(tracker.Update(At(900, 4, 6)).effect == Effect::None);
 	CHECK(tracker.Update(At(1000, 7, 6)).effect == Effect::Grab);
 	CHECK(tracker.Update(At(1100, 8, 6)).effect == Effect::None);
 	CHECK(tracker.Update(At(1200, 8, 6.7f)).effect == Effect::Climb);
@@ -97,14 +97,59 @@ static void Movement()
 	tracker.Update(At(0, 10, 10));
 	tracker.Update(At(100, 6, 10.5f));
 	CHECK(tracker.Update(At(200, 10, 11)).effect == Effect::None); // airborne context ends early
-	tracker.Update(At(300, 10, 10));
-	tracker.Update(At(400, 10, 8));
-	CHECK(tracker.Update(At(500, 10, 7)).effect == Effect::None);
-	CHECK(tracker.Update(At(600, 10, 7)).effect == Effect::Landing);
+	CHECK(tracker.Update(At(300, 10, 10)).effect == Effect::None);
+	CHECK(tracker.Update(At(400, 10, 8)).effect == Effect::None);
+	CHECK(tracker.Update(At(500, 10, 7)).effect == Effect::Landing);
+	CHECK(tracker.Update(At(600, 10, 7)).effect == Effect::None);
+}
+static void LandingRegressions()
+{
+	MotionTracker rolling;
+	rolling.Update(At(0, 4, 5));
+	rolling.Update(At(100, 6, 5));
+	rolling.Update(At(200, 6, 3));
+	CHECK(rolling.Update(At(300, 4, 2.7f, 1)).effect == Effect::Landing);
+	CHECK(rolling.Update(At(400, 4, 2.4f, 2)).effect == Effect::None);
+
+	MotionTracker narrow;
+	narrow.Update(At(0, 10, 5));
+	narrow.Update(At(100, 6, 5));
+	CHECK(narrow.Update(At(200, 10, 3)).effect == Effect::None);
+	CHECK(narrow.Update(At(300, 10, 2.7f)).effect == Effect::Landing);
+	CHECK(narrow.Update(At(400, 10, 2.4f)).effect == Effect::None);
+
+	MotionTracker drop;
+	drop.Update(At(0, 7, 4));
+	CHECK(drop.Update(At(16, 4, 2)).effect == Effect::Landing);
+	CHECK(drop.Update(At(32, 4, 2)).effect == Effect::None);
+
+	MotionTracker hitch;
+	hitch.Update(At(0, 4, 5));
+	hitch.Update(At(100, 6, 5));
+	CHECK(hitch.Update(At(500, 4, 2)).effect == Effect::Landing);
+
+	// An upward climb-out, stairs and long interruptions must remain silent.
+	drop.Reset();
+	drop.Update(At(0, 7, 4));
+	CHECK(drop.Update(At(16, 4, 4.3f)).effect == Effect::None);
+	hitch.Reset();
+	hitch.Update(At(0, 4, 5));
+	hitch.Update(At(100, 6, 5));
+	CHECK(hitch.Update(At(1500, 4, 2)).effect == Effect::None);
+	drop.Reset();
+	drop.Update(At(0, 7, 4));
+	CHECK(drop.Update(At(100, 4, -100)).effect == Effect::None);
+
+	Mixer pulse;
+	CHECK(pulse.Trigger(Effect::Landing, 80, 100));
+	const Motors start = pulse.Mix({}, 100), held = pulse.Mix({}, 120);
+	CHECK(held.low == start.low && held.high == start.high);
+	CHECK(pulse.Mix({}, 180).low < held.low);
+	CHECK(Silent(pulse.Mix({}, 260)));
 }
 int main()
 {
-	Combat(); Mixing(); Movement();
+	Combat(); Mixing(); Movement(); LandingRegressions();
 	if (failures) return 1;
 	puts("Rumble tests passed: confirmed combat outcomes, native mixing, expiration, movement contacts and reset safety.");
 	return 0;
