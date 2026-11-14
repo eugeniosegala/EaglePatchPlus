@@ -11,6 +11,8 @@
 #include "ac2_shadow_cascades.h"
 #include "ac2_fov.h"
 #include "ac2_rumble.h"
+#include "ac2_ui_scale.h"
+#include "ac2_highlights.h"
 
 //#define INCLUDE_CONSOLE // add ability to allocate console window
 
@@ -522,8 +524,11 @@ void patch()
 		LogInfo("Shadow map resolution patched to 4096.");
 	}
 
-	ac2_shadows::Install(GetModuleHandle(NULL), get_private_profile_int("ShadowCascadeDistanceMultiplier", 6));
-	ac2_fov::Install(GetModuleHandle(NULL), get_private_profile_float("FOVMultiplier", "1.0"));
+	ac2_shadows::Install(GetModuleHandle(NULL), get_private_profile_int("ShadowCascadeDistanceMultiplier", 8));
+	ac2_fov::Install(GetModuleHandle(NULL), get_private_profile_float("FOVMultiplier", "1.0"),
+		get_private_profile_bool("LockFOV", FALSE) != FALSE);
+	ac2_ui::Install(GetModuleHandle(NULL), get_private_profile_float("UIScale", "1.0"));
+	ac2_highlights::Install(GetModuleHandle(NULL), get_private_profile_bool("DisableWhiteHighlights", FALSE) != FALSE);
 	if (!get_private_profile_bool("DisableXInputPatch", FALSE))
 	{
 		ac2_rumble::Config rumble;

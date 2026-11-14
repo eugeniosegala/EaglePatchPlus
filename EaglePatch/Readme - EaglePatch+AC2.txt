@@ -4,8 +4,9 @@ Plugin version: 1.5.2
 
 Features:
 - Improved shadow map size from 1024 to 4096 (only when shadow quality is maxed out in game's settings; can be disabled in ini)
-- Extended shadow cascade distances (up to 6x, configurable in ini; Steam Digital UPlay only)
-- Added configurable camera FOV multiplier (FOVMultiplier in ini; Steam Digital UPlay only)
+- Extended shadow cascade distances (up to 8x, configurable in ini; Steam Digital UPlay only)
+- Optional white/grey highlight removal (DisableWhiteHighlights in ini; includes matching object glow; Steam Digital UPlay only)
+- Added configurable camera FOV multiplier and optional FOV lock (FOVMultiplier, LockFOV in ini; Steam Digital UPlay only)
 - Draw distance maxed out for buildings, peds and flags (can be disabled in ini)
 - Added high-precision framerate limiter (FramerateLimit) with optimized CPU sleep thresholds to prevent physics glitches on high refresh rate monitors (>60 FPS)
 - Added borderless windowed mode option (BorderlessWindow) with frame refresh in ini (currently supported on AC2 Digital UPlay)

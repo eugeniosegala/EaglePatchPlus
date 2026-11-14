@@ -85,7 +85,7 @@ static bool Near(float a, float b)
 	return fabsf(a - b) < 0.001f;
 }
 
-static void TestHook(float first, float second, float third, float farDistance, float multiplier, bool shouldChange, float factor)
+static void TestHook(float first, float second, float third, float farDistance, float multiplier, bool shouldChange, float expectedFirst, float expectedSecond, float expectedThird)
 {
 	float frame[24];
 	for (unsigned int i = 0; i < 24; ++i)
@@ -107,11 +107,11 @@ static void TestHook(float first, float second, float third, float farDistance, 
 	CHECK(memcmp(frame, before, sizeof(float)) == 0);
 	if (shouldChange)
 	{
-		CHECK(Near(frame[3], first * factor));
-		CHECK(Near(frame[2], second * factor));
-		CHECK(Near(frame[1], third * factor));
-		CHECK(frame[1] < frame[0]);
-		CHECK(Near(ac2_shadows::detail::effectiveMultiplier, factor));
+		CHECK(Near(frame[3], expectedFirst));
+		CHECK(Near(frame[2], expectedSecond));
+		CHECK(Near(frame[1], expectedThird));
+		CHECK(frame[3] < frame[2] && frame[2] < frame[1] && frame[1] < frame[0]);
+		CHECK(Near(ac2_shadows::detail::effectiveMultiplier, expectedFirst / first));
 		const float original[4] = {first, second, third, farDistance};
 		for (unsigned int i = 0; i < 4; ++i)
 		{
@@ -162,7 +162,7 @@ static void TestInstallation()
 	CHECK(!ac2_shadows::Install(NULL, 6));
 	CHECK(!ac2_shadows::Install(module, 1));
 	CHECK(!ac2_shadows::Install(module, 0));
-	CHECK(!ac2_shadows::Install(module, 7));
+	CHECK(!ac2_shadows::Install(module, 9));
 	CHECK(!ac2_shadows::Install(module, UINT32_MAX));
 	CHECK(memcmp(target, signature, sizeof(signature)) == 0);
 
@@ -195,35 +195,38 @@ static void TestInstallation()
 	target[0] = 0xE9; // A standalone radius patch already owns the site.
 	CHECK(!ac2_shadows::Install(module, 6));
 	memcpy(target, signature, sizeof(signature));
-	CHECK(ac2_shadows::Install(module, 6));
+	CHECK(ac2_shadows::Install(module, 8));
 	CHECK(target[0] == 0xE9 && target[5] == 0x90);
 	CHECK(memcmp(target + 6, signature + 6, sizeof(signature) - 6) == 0);
 	uint32_t displacement = 0;
 	memcpy(&displacement, target + 1, sizeof(displacement));
 	CHECK(reinterpret_cast<uintptr_t>(target + 5) + displacement == reinterpret_cast<uintptr_t>(&Hook));
 	CHECK(continuation == reinterpret_cast<uintptr_t>(target + 6));
-	CHECK(ac2_shadows::detail::multiplier == 6.0f);
+	CHECK(ac2_shadows::detail::multiplier == 8.0f);
 	MEMORY_BASIC_INFORMATION memory = {};
 	CHECK(VirtualQuery(target, &memory, sizeof(memory)) == sizeof(memory));
 	CHECK(memory.Protect == PAGE_READWRITE);
 	CHECK(!ac2_shadows::Install(module, 3));
-	CHECK(ac2_shadows::detail::multiplier == 6.0f);
+	CHECK(ac2_shadows::detail::multiplier == 8.0f);
 	VirtualFree(image, 0, MEM_RELEASE);
 }
 
 int main()
 {
 	InitLogging(NULL, false, false);
-	TestHook(4, 16, 64, 400, 3, true, 3);
-	TestHook(4, 16, 64, 400, 6, true, 6);
-	TestHook(8, 30, 150, 400, 6, true, 392.0f / 150.0f);
-	TestHook(4, 16, 64, 400, 1, false, 1);
-	TestHook(0, 16, 64, 400, 6, false, 1);
-	TestHook(-4, 16, 64, 400, 6, false, 1);
-	TestHook(4, 64, 16, 400, 6, false, 1);
-	TestHook(4, 16, 399, 400, 6, false, 1);
-	TestHook(std::numeric_limits<float>::quiet_NaN(), 16, 64, 400, 6, false, 1);
-	TestHook(4, 16, 64, std::numeric_limits<float>::infinity(), 6, false, 1);
+	TestHook(4, 16, 64, 400, 3, true, 12, 48, 192);
+	TestHook(4, 16, 64, 400, 6, true, 24, 96, 384);
+	TestHook(4, 16, 64, 400, 8, true, 32, 128, 392);
+	TestHook(8, 80, 90, 400, 8, true, 64, 384.16f, 392);
+	TestHook(390, 391, 392, 400, 8, false, 0, 0, 0);
+	TestHook(8, 30, 150, 400, 6, true, 48, 180, 392);
+	TestHook(4, 16, 64, 400, 1, false, 0, 0, 0);
+	TestHook(0, 16, 64, 400, 6, false, 0, 0, 0);
+	TestHook(-4, 16, 64, 400, 6, false, 0, 0, 0);
+	TestHook(4, 64, 16, 400, 6, false, 0, 0, 0);
+	TestHook(4, 16, 399, 400, 6, false, 0, 0, 0);
+	TestHook(std::numeric_limits<float>::quiet_NaN(), 16, 64, 400, 6, false, 0, 0, 0);
+	TestHook(4, 16, 64, std::numeric_limits<float>::infinity(), 6, false, 0, 0, 0);
 	TestInstallation();
 	ShutdownLogging();
 	if (failures)
