@@ -1,39 +1,29 @@
 #include "ac2_ui_scale.h"
+#include "ac2_ui_movie.h"
 #include "ac2_image.h"
 #include "patcher.h"
 #include "../shared/logger.h"
-#include <string.h>
-#include <math.h>
+#include <new>
 
 namespace ac2_ui
 {
 namespace detail
 {
-struct Root { uintptr_t value = 0; };
-using Open = Root*(__thiscall*)(Root*, void*, const wchar_t*);
-using Close = void(__thiscall*)(Root*);
-using Valid = int(__thiscall*)(Root*);
-using GetPair = int*(__thiscall*)(Root*, int*, double*, double*);
-using SetPair = int*(__thiscall*)(Root*, int*, double, double);
-using Advance = int*(__thiscall*)(void*, int*, float);
-struct Api { Open open; Close close; Valid valid; GetPair position, scale; SetPair setPosition, setScale; };
-Api api = {};
-Advance advance = nullptr;
+using Load = int*(__thiscall*)(void*, int*, const void*, uint32_t, uint32_t);
+using Destroy = void(__thiscall*)(void*);
+Load load = nullptr;
+Destroy destroy = nullptr;
 uintptr_t image = 0;
 float multiplier = 1.0f;
-volatile LONG applied = 0, skipped = 0;
-
-bool Finite(double value)
-{
-	uint64_t bits;
-	memcpy(&bits, &value, sizeof(bits));
-	return (bits & UINT64_C(0x7ff0000000000000)) != UINT64_C(0x7ff0000000000000);
-}
+CRITICAL_SECTION storageLock;
+struct Buffer { void* state; movie::Bytes data; Buffer* next = nullptr; };
+Buffer* buffers = nullptr;
+size_t retained = 0;
+volatile LONG changes = 0;
 bool Read(uintptr_t address, void* out, size_t size)
 {
 	if (!ac2_image::IsReadable(reinterpret_cast<const void*>(address), size)) return false;
-	memcpy(out, reinterpret_cast<const void*>(address), size);
-	return true;
+	memcpy(out, reinterpret_cast<const void*>(address), size); return true;
 }
 bool TypeName(void* item, char (&name)[64])
 {
@@ -50,141 +40,131 @@ bool TypeName(void* item, char (&name)[64])
 		if (!name[i]) return i != 0;
 		if (name[i] < 32 || name[i] > 126) return false;
 	}
-	name[0] = 0;
-	return false;
+	name[0] = 0; return false;
 }
-void Anchor(const char* name, double& x, double& y)
+bool Reserve(Buffer* value)
 {
-	x = 640; y = 360;
-	if (strstr(name, "HudMiniMap")) { x = 1280; y = 720; }
-	else if (strstr(name, "HudControlsManager")) { x = 1280; y = 0; }
-	else if (strstr(name, "HudHealthBar") || strstr(name, "HudMissionState")) { x = 0; y = 0; }
-	else if (strstr(name, "HudMoney")) { x = 0; y = 720; }
+	EnterCriticalSection(&storageLock);
+	const bool fits = value->data.size() <= 64 * 1024 * 1024 - retained;
+	if (fits) retained += value->data.size();
+	LeaveCriticalSection(&storageLock); return fits;
 }
-bool Apply(void* item, const char* name)
+void Store(void* state, Buffer* replacement, bool retire)
 {
-	// World markers must retain their projected positions; these are not HUD panels.
-	if (strstr(name, "HudIconManager")) return false;
-	uintptr_t player = 0;
-	if (!Read(reinterpret_cast<uintptr_t>(item) + 0x64, &player, 4) || !player) return false;
-	Root root;
-	api.open(&root, reinterpret_cast<void*>(player), L"_root");
-	if (!api.valid(&root))
+	Buffer* garbage = nullptr;
+	EnterCriticalSection(&storageLock);
+	if (retire)
 	{
-		api.close(&root);
-		api.open(&root, reinterpret_cast<void*>(player), L"_level0");
+		Buffer** link = &buffers;
+		while (*link)
+		{
+			Buffer* old = *link;
+			if (old->state != state) { link = &old->next; continue; }
+			*link = old->next; retained -= old->data.size(); old->next = garbage; garbage = old;
+		}
 	}
-	if (!api.valid(&root)) { api.close(&root); return false; }
-	int status = -1;
-	double x = 0, y = 0, sx = 0, sy = 0;
-	api.position(&root, &status, &x, &y);
-	bool ok = status >= 0 && Finite(x) && Finite(y);
-	api.scale(&root, &status, &sx, &sy);
-	ok = ok && status >= 0 && Finite(sx) && Finite(sy);
-	const double target = 100.0 * multiplier;
-	// Roots normally have a 100% transform. Do not compound on reload, or replace a different mod's transform.
-	if (!ok || (sx == target && sy == target) || sx != 100.0 || sy != 100.0)
-	{ api.close(&root); return false; }
-	double ax, ay;
-	Anchor(name, ax, ay);
-	const double nx = x * multiplier + ax * (1.0 - multiplier);
-	const double ny = y * multiplier + ay * (1.0 - multiplier);
-	api.setPosition(&root, &status, nx, ny);
-	ok = status >= 0;
-	if (ok) { api.setScale(&root, &status, target, target); ok = status >= 0; }
-	if (ok)
-	{
-		double actualX = 0, actualY = 0, actualSx = 0, actualSy = 0;
-		api.position(&root, &status, &actualX, &actualY);
-		ok = status >= 0 && Finite(actualX) && Finite(actualY) && fabs(actualX - nx) < 0.1 && fabs(actualY - ny) < 0.1;
-		api.scale(&root, &status, &actualSx, &actualSy);
-		ok = ok && status >= 0 && Finite(actualSx) && Finite(actualSy) && fabs(actualSx - target) < 0.01 && fabs(actualSy - target) < 0.01;
-	}
-	if (!ok)
-	{
-		api.setPosition(&root, &status, x, y);
-		api.setScale(&root, &status, sx, sy);
-	}
-	api.close(&root);
-	return ok;
+	if (replacement) { replacement->next = buffers; buffers = replacement; }
+	LeaveCriticalSection(&storageLock);
+	while (garbage) { Buffer* next = garbage->next; delete garbage; garbage = next; }
 }
-int* __fastcall AdvanceHook(void* player, void*, int* status, float elapsed)
+int* __fastcall LoadHook(void* state, void*, int* status, const void* data, uint32_t size, uint32_t flags)
 {
-	int* result = advance(player, status, elapsed);
-	uintptr_t state = 0, bridge = 0, itemPlayer = 0;
-	if (!Read(reinterpret_cast<uintptr_t>(player) + 4, &state, 4) || !Read(state + 0x50, &bridge, 4) || bridge < 8 ||
-		!Read(bridge - 8 + 0x64, &itemPlayer, 4) || itemPlayer != reinterpret_cast<uintptr_t>(player)) return result;
-	void* item = reinterpret_cast<void*>(bridge - 8);
+	Buffer* pending = nullptr;
+	uintptr_t player = 0, bridge = 0, itemPlayer = 0;
 	char name[64] = {};
-	if (!TypeName(item, name)) return result;
-	if (Apply(item, name))
+	// The engine holds its per-player lock throughout this internal load, including deferred menus.
+	if (Read(reinterpret_cast<uintptr_t>(state), &player, 4) && Read(reinterpret_cast<uintptr_t>(state) + 0x50, &bridge, 4) && bridge >= 8 &&
+		Read(bridge - 8 + 0x64, &itemPlayer, 4) && itemPlayer == player && TypeName(reinterpret_cast<void*>(bridge - 8), name) &&
+		size <= 16 * 1024 * 1024 && ac2_image::IsReadable(data, size))
 	{
-		if (InterlockedIncrement(&applied) <= 8) LogInfo("UIScale: scaled %s to %.0f%%.", name[0] ? name : "Flash interface", multiplier * 100);
+		pending = new(std::nothrow) Buffer{state, {}, nullptr};
+		if (pending)
+		{
+			try
+			{
+				if (!movie::Patch(static_cast<const unsigned char*>(data), size, multiplier, name, pending->data) || !Reserve(pending))
+				{ delete pending; pending = nullptr; }
+			}
+			catch (const std::bad_alloc&) { delete pending; pending = nullptr; }
+		}
 	}
-	else if (InterlockedIncrement(&skipped) <= 3) LogInfo("UIScale: left %s unchanged (root unavailable, already scaled or custom transform).", name[0] ? name : "Flash interface");
+	int* result = load(state, status, pending ? pending->data.data() : data, pending ? (uint32_t)pending->data.size() : size, flags);
+	// Flash may retain the stream. Retire old bytes only after successful replacement or destruction.
+	Store(state, pending, result && *result >= 0);
+	if (pending && InterlockedIncrement(&changes) <= 12)
+		LogInfo("UIScale: %s movie prepared at %.0f%% (load status %d).", name, multiplier * 100, result ? *result : -1);
 	return result;
+}
+void __fastcall DestroyHook(void* state, void*)
+{
+	destroy(state);
+	Store(state, nullptr, true);
 }
 }
 
 bool Install(HMODULE game, float scale)
 {
-	if (!detail::Finite(scale) || scale < 0.5f || scale > 1.0f)
-	{ LogWarn("UIScale must be between 0.5 and 1.0; UI scaling skipped."); return false; }
-	if (scale == 1.0f) return false;
-	if (!ac2_image::IsVerifiedSteamImage(game))
-	{ LogWarn("UIScale: executable layout is not verified; skipped."); return false; }
+	if (!movie::ValidScale(scale)) { LogWarn("UIScale must be between 0.5 and 1.0; skipped."); return false; }
+	if (scale == 1) return false;
+	if (!ac2_image::IsVerifiedSteamImage(game)) { LogWarn("UIScale: executable layout is not verified; skipped."); return false; }
 	const uintptr_t base = reinterpret_cast<uintptr_t>(game);
-	// Steam Digital UPlay: the initial/deferred load step and native Flash MovieClip APIs.
-	// The verified callback setter stores FireItem's interface at item+8 in player.state+0x50.
-	struct Signature { uintptr_t rva; const char* bytes; size_t size; };
-	const Signature signatures[] = {
-		{0x13ac440, "\x56\x8b\xf1\x57\x8b\x7e\x04", 7},
-		{0x13ac405, "\x8b\x76\x04\x8b\x44\x24\x10\x83\xc6\x50", 10},
-		{0x13ae6a0, "\x8b\x44\x24\x04\x85\xc0\x57\x8b\xf9", 9},
-		{0x13aff30, "\x51\x53\x8b\xd9\x8b\x03\x85\xc0", 8},
-		{0x13ae1e0, "\x8b\x01\x85\xc0\x74\x0c\x83\x78\x1c\x00", 10},
-		{0x13af2f0, "\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e", 9},
-		{0x13af460, "\x83\xec\x14\x57\x8b\xf9\x8b\x07\x85\xc0", 10},
-		{0x13ae820, "\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e", 9},
-		{0x13ae9a0, "\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e", 9}
+	struct Hook { uintptr_t rva; const char* bytes; size_t size; uintptr_t entry; unsigned char* original; DWORD protection; };
+	Hook hooks[] = {
+		{0x13b2dd0, "\x83\xec\x0c\x53\x56\x8d\x44\x24\x0c", 9, reinterpret_cast<uintptr_t>(&detail::LoadHook), nullptr, 0},
+		{0x13b28b0, "\x51\x53\x55\x56\x57", 5, reinterpret_cast<uintptr_t>(&detail::DestroyHook), nullptr, 0}
 	};
-	for (const auto& signature : signatures)
+	const void* bridge = reinterpret_cast<const void*>(base + 0x13ac405);
+	if (!ac2_image::IsReadable(bridge, 10) || memcmp(bridge, "\x8b\x76\x04\x8b\x44\x24\x10\x83\xc6\x50", 10))
+	{ LogWarn("UIScale: UI owner callback differs; skipped."); return false; }
+	for (const auto& hook : hooks)
+		if (!ac2_image::IsReadable(reinterpret_cast<const void*>(base + hook.rva), hook.size) || memcmp(reinterpret_cast<const void*>(base + hook.rva), hook.bytes, hook.size))
+		{ LogWarn("UIScale: movie loader differs or is already hooked; skipped."); return false; }
+	for (auto& hook : hooks)
 	{
-		const void* address = reinterpret_cast<const void*>(base + signature.rva);
-		if (!ac2_image::IsReadable(address, signature.size) || memcmp(address, signature.bytes, signature.size))
-		{ LogWarn("UIScale: UI code differs or is already hooked; skipped."); return false; }
-	}
-	unsigned char* target = reinterpret_cast<unsigned char*>(base + 0x13ac440);
-	unsigned char* original = static_cast<unsigned char*>(VirtualAlloc(nullptr, 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
-	if (!original) return false;
-	memcpy(original, target, 7);
-	original[7] = 0xe9;
-	const uint32_t back = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target + 7) - reinterpret_cast<uintptr_t>(original + 12));
-	memcpy(original + 8, &back, 4);
-	DWORD protect = 0, old = 0;
-	if (!VirtualProtect(original, 16, PAGE_EXECUTE_READ, &protect) || !FlushInstructionCache(GetCurrentProcess(), original, 16) || !Unprotect_internal(target, 7, &old))
-	{ VirtualFree(original, 0, MEM_RELEASE); return false; }
-	detail::image = base;
-	detail::multiplier = scale;
-	detail::advance = reinterpret_cast<detail::Advance>(original);
-	detail::api = {reinterpret_cast<detail::Open>(base + 0x13ae6a0), reinterpret_cast<detail::Close>(base + 0x13aff30),
-		reinterpret_cast<detail::Valid>(base + 0x13ae1e0), reinterpret_cast<detail::GetPair>(base + 0x13af2f0),
-		reinterpret_cast<detail::GetPair>(base + 0x13af460), reinterpret_cast<detail::SetPair>(base + 0x13ae820),
-		reinterpret_cast<detail::SetPair>(base + 0x13ae9a0)};
-	unsigned char jump[7] = {0xe9, 0, 0, 0, 0, 0x90, 0x90};
-	const uint32_t displacement = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&detail::AdvanceHook) - reinterpret_cast<uintptr_t>(target + 5));
-	memcpy(jump + 1, &displacement, 4);
-	memcpy(target, jump, 7);
-	if (!Protect_internal(target, 7, old))
-	{
-		memcpy(target, original, 7);
-		Protect_internal(target, 7, old);
-		VirtualFree(original, 0, MEM_RELEASE);
-		detail::advance = nullptr;
-		LogWarn("UIScale: could not restore code protection; original code restored.");
+		hook.original = static_cast<unsigned char*>(VirtualAlloc(nullptr, 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+		if (hook.original)
+		{
+			memcpy(hook.original, reinterpret_cast<void*>(base + hook.rva), hook.size);
+			hook.original[hook.size] = 0xe9;
+			const uint32_t jump = (uint32_t)(base + hook.rva + hook.size - reinterpret_cast<uintptr_t>(hook.original + hook.size + 5));
+			memcpy(hook.original + hook.size + 1, &jump, 4);
+			DWORD old = 0;
+			if (VirtualProtect(hook.original, 16, PAGE_EXECUTE_READ, &old) && FlushInstructionCache(GetCurrentProcess(), hook.original, 16)) continue;
+		}
+		for (auto& allocated : hooks) if (allocated.original) VirtualFree(allocated.original, 0, MEM_RELEASE);
 		return false;
 	}
-	LogInfo("UIScale: %.2fx (native Flash transform; restart to change).", scale);
+	InitializeCriticalSection(&detail::storageLock);
+	detail::image = base; detail::multiplier = scale;
+	detail::load = reinterpret_cast<detail::Load>(hooks[0].original);
+	detail::destroy = reinterpret_cast<detail::Destroy>(hooks[1].original);
+	unsigned patched = 0; bool success = true;
+	for (auto& hook : hooks)
+	{
+		auto* target = reinterpret_cast<unsigned char*>(base + hook.rva);
+		if (!Unprotect_internal(target, hook.size, &hook.protection)) { success = false; break; }
+		unsigned char jump[9]; memset(jump, 0x90, sizeof(jump)); jump[0] = 0xe9;
+		const uint32_t offset = (uint32_t)(hook.entry - reinterpret_cast<uintptr_t>(target + 5));
+		memcpy(jump + 1, &offset, 4); memcpy(target, jump, hook.size); ++patched;
+		if (!Protect_internal(target, hook.size, hook.protection)) { success = false; break; }
+	}
+	if (!success)
+	{
+		bool restored = true;
+		for (unsigned i = 0; i < patched; ++i)
+		{
+			auto* target = reinterpret_cast<unsigned char*>(base + hooks[i].rva); DWORD old;
+			if (Unprotect_internal(target, hooks[i].size, &old))
+			{ memcpy(target, hooks[i].original, hooks[i].size); Protect_internal(target, hooks[i].size, hooks[i].protection); }
+			else restored = false;
+		}
+		// Never free a trampoline that a remaining jump can still reach.
+		if (!restored) { detail::multiplier = 1; LogWarn("UIScale: rollback incomplete; scaling disabled, hook storage retained."); return false; }
+		for (auto& hook : hooks) VirtualFree(hook.original, 0, MEM_RELEASE);
+		DeleteCriticalSection(&detail::storageLock); detail::load = nullptr; detail::destroy = nullptr;
+		LogWarn("UIScale: could not install both hooks; rolled back."); return false;
+	}
+	LogInfo("UIScale: %.2fx (UI movie load patch; restart to change).", scale);
 	return true;
 }
 }

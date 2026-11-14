@@ -114,6 +114,7 @@ add_library(EaglePatchPlusAC2 SHARED
     EaglePatch/src/ac2_rumble_effects.h
     EaglePatch/src/ac2_ui_scale.cpp
     EaglePatch/src/ac2_ui_scale.h
+    EaglePatch/src/ac2_ui_movie.h
 )
 
 target_include_directories(EaglePatchPlusAC2 PRIVATE ${SHARED_INCLUDE_DIRS})

@@ -1,131 +1,171 @@
 #include <stdio.h>
 #include <limits>
-#include <wchar.h>
+#include <map>
+#include <string>
+#include <fstream>
+#include "../EaglePatch/src/ac2_ui_movie.h"
+#ifdef _WIN32
 #include "../EaglePatch/src/ac2_ui_scale.cpp"
+#endif
 
-using namespace ac2_ui::detail;
+using namespace ac2_ui::movie;
 static unsigned failures = 0;
 #define CHECK(expr) do { if (!(expr)) { fprintf(stderr, "Line %u: %s\n", __LINE__, #expr); ++failures; } } while (0)
-static double px, py, sx, sy;
-static unsigned opens, closes, writes;
-static bool available, rejectScale;
-static void* expectedPlayer;
-static uintptr_t item[40];
-static Root* __fastcall OpenRoot(Root* root, void*, void* player, const wchar_t* path)
+static void Length(Bytes& b) { for (unsigned i = 0; i < 4; ++i) b[4 + i] = (unsigned char)(b.size() >> (8 * i)); }
+static Bytes Movie()
 {
-	CHECK(player == expectedPlayer);
-	CHECK(!wcscmp(path, L"_root") || !wcscmp(path, L"_level0"));
-	root->value = available ? 1 : 0; ++opens; return root;
+	Bytes b = {'U','E','F',8,0,0,0,0};
+	// RECT: 0..25600 by 0..14400 twips, 25 FPS, one frame.
+	const unsigned char header[] = {0x80,0,3,0x20,0,0,1,0xc2,0,0,0x19,1,0};
+	b.insert(b.end(), header, header + sizeof(header));
+	Put16(b, (69 << 6) | 4); Put32(b, 0);
+	Put16(b, (12 << 6) | 1); b.push_back(0); // Existing first-frame actions.
+	Put16(b, 1 << 6); Put16(b, 0); Length(b); return b;
 }
-static void __fastcall CloseRoot(Root* root, void*) { root->value = 0; ++closes; }
-static int __fastcall ValidRoot(Root* root, void*) { return root->value != 0; }
-static int* __fastcall Position(Root*, void*, int* status, double* x, double* y) { *status = 0; *x = px; *y = py; return status; }
-static int* __fastcall Scale(Root*, void*, int* status, double* x, double* y) { *status = 0; *x = sx; *y = sy; return status; }
-static int* __fastcall SetPosition(Root*, void*, int* status, double x, double y) { ++writes; *status = 0; px = x; py = y; return status; }
-static int* __fastcall SetScale(Root*, void*, int* status, double x, double y)
+struct Value
 {
-	++writes; *status = rejectScale && x == 50 ? -1 : 0;
-	if (*status >= 0) { sx = x; sy = y; }
-	return status;
-}
-static void Reset()
+	std::string text; float number = 0; bool root = false;
+	Value() = default;
+	explicit Value(float n) : number(n) {}
+	explicit Value(const char* s) : text(s) {}
+};
+// Independent interpreter for the AVM1 instructions emitted by the patch.
+static bool Execute(const Bytes& code, std::map<std::string, float>& root)
 {
-	api = {reinterpret_cast<Open>(&OpenRoot), reinterpret_cast<Close>(&CloseRoot), reinterpret_cast<Valid>(&ValidRoot),
-		reinterpret_cast<GetPair>(&Position), reinterpret_cast<GetPair>(&Scale), reinterpret_cast<SetPair>(&SetPosition), reinterpret_cast<SetPair>(&SetScale)};
-	multiplier = 0.5f; px = py = 0; sx = sy = 100;
-	opens = closes = writes = 0; available = true; rejectScale = false;
-	memset(item, 0, sizeof(item)); item[0x64/4] = 0x1234;
-	expectedPlayer = reinterpret_cast<void*>(0x1234);
+	std::vector<Value> stack;
+	auto pop = [&]() { Value v = stack.back(); stack.pop_back(); return v; };
+	for (size_t pc = 0; pc < code.size();)
+	{
+		const unsigned op = code[pc++]; if (!op) return stack.empty();
+		size_t end = pc;
+		if (op >= 0x80) { if (pc + 2 > code.size()) return false; end = pc + 2 + U16(&code[pc]); pc += 2; if (end > code.size()) return false; }
+		if (op == 0x96)
+		{
+			if (pc == end) return false;
+			const unsigned kind = code[pc++];
+			if (kind == 0)
+			{
+				size_t start = pc; while (pc < end && code[pc]) ++pc;
+				if (pc + 1 != end) return false;
+				stack.push_back(Value(reinterpret_cast<const char*>(&code[start])));
+			}
+			else if (kind == 1 && end - pc == 4) { float n; memcpy(&n, &code[pc], 4); stack.push_back(Value(n)); }
+			else return false;
+			pc = end;
+		}
+		else if (op == 0x1c) { if (stack.empty() || pop().text != "_root") return false; Value v; v.root = true; stack.push_back(v); }
+		else if (op == 0x4e)
+		{
+			if (stack.size() < 2) return false; Value key = pop(), obj = pop(); if (!obj.root) return false;
+			stack.push_back(Value(root[key.text]));
+		}
+		else if (op == 0x4f)
+		{
+			if (stack.size() < 3) return false; Value v = pop(), key = pop(), obj = pop(); if (!obj.root) return false;
+			root[key.text] = v.number;
+		}
+		else if (op == 0x0c || op == 0x0a)
+		{
+			if (stack.size() < 2) return false; float b = pop().number, a = pop().number;
+			stack.push_back(Value(op == 0x0c ? a * b : a + b));
+		}
+		else if (op == 0x9d)
+		{
+			if (end - pc != 2 || stack.empty()) return false;
+			const int offset = (int16_t)U16(&code[pc]); pc = end;
+			if (pop().number != 0) { if (offset < 0 || size_t(offset) > code.size() - pc) return false; pc += offset; }
+		}
+		else return false;
+	}
+	return false;
 }
 static void TransformTests()
 {
-	Reset(); CHECK(Apply(item, "MenuManager"));
-	CHECK(sx == 50 && sy == 50 && px == 320 && py == 180);
-	CHECK(opens == 1 && closes == 1);
-	CHECK(!Apply(item, "MenuManager")); CHECK(sx == 50 && px == 320 && writes == 2);
-	Reset(); CHECK(Apply(item, "HudMiniMap")); CHECK(px == 640 && py == 360);
-	CHECK(px + 1280 * 0.5 == 1280 && py + 720 * 0.5 == 720);
-	Reset(); CHECK(Apply(item, "HudControlsManager")); CHECK(px == 640 && py == 0);
-	Reset(); CHECK(Apply(item, "HudHealthBar")); CHECK(px == 0 && py == 0);
-	Reset(); CHECK(Apply(item, "HudMoneyComponent")); CHECK(px == 0 && py == 360);
-	Reset(); CHECK(!Apply(item, "HudIconManager")); CHECK(writes == 0 && opens == 0);
-	Reset(); px = 20; py = 40; CHECK(Apply(item, "MenuManager")); CHECK(px == 330 && py == 200);
-	Reset(); available = false; CHECK(!Apply(item, "MenuManager")); CHECK(opens == 2 && closes == 2 && writes == 0);
-	Reset(); sx = 75; CHECK(!Apply(item, "MenuManager")); CHECK(sx == 75 && writes == 0 && closes == 1);
-	Reset(); px = std::numeric_limits<double>::quiet_NaN(); CHECK(!Apply(item, "MenuManager")); CHECK(writes == 0 && closes == 1);
-	Reset(); rejectScale = true; CHECK(!Apply(item, "MenuManager")); CHECK(px == 0 && py == 0 && sx == 100 && sy == 100 && closes == 1);
-}
-static void GuardTests()
-{
-	CHECK(!ac2_ui::Install(nullptr, 1));
-	CHECK(!ac2_ui::Install(nullptr, 0.5f));
-	CHECK(!ac2_ui::Install(nullptr, 0.49f));
-	CHECK(!ac2_ui::Install(nullptr, 1.1f));
-	CHECK(!ac2_ui::Install(nullptr, std::numeric_limits<float>::quiet_NaN()));
-	CHECK(!ac2_ui::Install(nullptr, std::numeric_limits<float>::infinity()));
-}
-static void InstallationTests()
-{
-	auto* game = static_cast<unsigned char*>(VirtualAlloc(nullptr, 0x2190000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
-	CHECK(game != nullptr); if (!game) return;
-	auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(game);
-	dos->e_magic = IMAGE_DOS_SIGNATURE; dos->e_lfanew = 0x80;
-	auto* nt = reinterpret_cast<IMAGE_NT_HEADERS32*>(game + 0x80);
-	nt->Signature = IMAGE_NT_SIGNATURE; nt->FileHeader.Machine = IMAGE_FILE_MACHINE_I386;
-	nt->FileHeader.TimeDateStamp = 0x5925ba62;
-	nt->OptionalHeader.Magic = IMAGE_NT_OPTIONAL_HDR32_MAGIC; nt->OptionalHeader.SizeOfImage = 0x2190000;
-	const uintptr_t offsets[] = {0x13ac440,0x13ac405,0x13ae6a0,0x13aff30,0x13ae1e0,0x13af2f0,0x13af460,0x13ae820,0x13ae9a0};
-	const char* bytes[] = {"\x56\x8b\xf1\x57\x8b\x7e\x04", "\x8b\x76\x04\x8b\x44\x24\x10\x83\xc6\x50", "\x8b\x44\x24\x04\x85\xc0\x57\x8b\xf9",
-		"\x51\x53\x8b\xd9\x8b\x03\x85\xc0", "\x8b\x01\x85\xc0\x74\x0c\x83\x78\x1c\x00",
-		"\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e", "\x83\xec\x14\x57\x8b\xf9\x8b\x07\x85\xc0",
-		"\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e", "\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e"};
-	const unsigned lengths[] = {7,10,9,8,10,9,10,9,9};
-	for (unsigned i = 0; i < 9; ++i) memcpy(game + offsets[i], bytes[i], lengths[i]);
-	HMODULE module = reinterpret_cast<HMODULE>(game);
-	for (unsigned i = 0; i < 9; ++i)
+	struct Case { const char* name; float x, y; };
+	const Case cases[] = {{"TitleMenu",320,180},{"PauseMenu",320,180},{"HudMiniMap",640,360},
+		{"HudControlsManager",640,0},{"HudHealthBar",0,0},{"HudMissionState",0,0},{"HudMoneyComponent",0,360}};
+	for (const auto& c : cases)
 	{
-		game[offsets[i]] ^= 1;
-		CHECK(!ac2_ui::Install(module, 0.5f));
-		game[offsets[i]] ^= 1;
-		CHECK(game[offsets[0]] == 0x56);
+		float x, y; Anchor(c.name,x,y); Bytes actions = Actions(0.5f,1280*x,720*y);
+		std::map<std::string,float> root = {{"_xscale",100},{"_yscale",80},{"_x",20},{"_y",40}};
+		CHECK(Execute(actions,root)); CHECK(root["_xscale"] == 50 && root["_yscale"] == 40);
+		CHECK(root["_x"] == c.x+10 && root["_y"] == c.y+20);
+		auto once = root; CHECK(Execute(actions,root)); CHECK(root == once);
 	}
-	nt->FileHeader.TimeDateStamp ^= 1; CHECK(!ac2_ui::Install(module, 0.5f)); nt->FileHeader.TimeDateStamp ^= 1;
-	// Return the original status pointer/value after the displaced prologue.
-	const unsigned char finish[] = {0x8b,0x44,0x24,0x0c,0xc7,0x00,0x2a,0,0,0,0x5f,0x5e,0xc2,8,0};
-	memcpy(game + offsets[0] + 7, finish, sizeof(finish));
-	CHECK(ac2_ui::Install(module, 0.5f));
-	CHECK(game[offsets[0]] == 0xe9);
-	CHECK(!ac2_ui::Install(module, 0.5f));
-	Reset();
-	uintptr_t player[2] = {}, state[24] = {};
-	player[1] = reinterpret_cast<uintptr_t>(state);
-	state[0x50/4] = reinterpret_cast<uintptr_t>(item) + 8;
-	item[0x64/4] = reinterpret_cast<uintptr_t>(player); expectedPlayer = player;
-	uintptr_t table[8] = {}, type[9] = {};
-	const uintptr_t getter = reinterpret_cast<uintptr_t>(game + 0x1000), slot = reinterpret_cast<uintptr_t>(game + 0x1c6b000);
-	game[0x1000] = 0xa1; memcpy(game + 0x1001, &slot, 4); game[0x1005] = 0xc3;
-	table[4] = getter; item[0] = reinterpret_cast<uintptr_t>(table);
-	type[8] = reinterpret_cast<uintptr_t>("MenuManager");
-	const uintptr_t typePointer = reinterpret_cast<uintptr_t>(type);
-	memcpy(reinterpret_cast<void*>(slot), &typePointer, 4);
-	char name[64] = {};
-	CHECK(TypeName(item, name) && !strcmp(name, "MenuManager"));
-	// The real installed x86 jump and trampoline must return with the original thiscall stack intact.
-	int status = -1;
-	CHECK(reinterpret_cast<Advance>(game + offsets[0])(player, &status, 0.0f) == &status);
-	CHECK(status == 42);
-	CHECK(sx == 50 && sy == 50 && px == 320 && py == 180 && opens == closes);
-	// A deferred reload uses the same hook and must not compound the transform.
-	CHECK(reinterpret_cast<Advance>(game + offsets[0])(player, &status, 0.0f) == &status);
-	CHECK(sx == 50 && sy == 50 && px == 320 && py == 180 && writes == 2);
-	VirtualFree(reinterpret_cast<void*>(advance), 0, MEM_RELEASE);
-	advance = nullptr;
-	VirtualFree(game, 0, MEM_RELEASE);
 }
-int main()
+static void ParserTests()
 {
-	TransformTests(); GuardTests(); InstallationTests();
+	Bytes b = Movie(), out; CHECK(Patch(b.data(),b.size(),0.5f,"TitleMenu",out));
+	CHECK(U32(out.data()+4) == out.size()); CHECK(b == Movie());
+	CHECK(!Patch(out.data(),out.size(),0.5f,"TitleMenu",b)); CHECK(b.empty()); b = Movie();
+	const size_t frame = b.size()-4, added = out.size()-b.size();
+	CHECK(U16(out.data()+frame) == ((12<<6)|63)); CHECK(U32(out.data()+frame+2) == added-6);
+	Bytes actions(out.begin()+frame+6,out.begin()+frame+added);
+	std::map<std::string,float> root = {{"_xscale",100},{"_yscale",100}};
+	CHECK(Execute(actions,root)); CHECK(root["_x"] == 320 && root["_y"] == 180);
+	CHECK(!memcmp(out.data()+8,b.data()+8,frame-8)); CHECK(!memcmp(out.data()+frame+added,b.data()+frame,b.size()-frame));
+	for (size_t n = 0; n < b.size(); ++n) { Bytes truncated(b.begin(),b.begin()+n); if (n>=8) Length(truncated); CHECK(!Patch(truncated.data(),n,0.5f,"TitleMenu",out)); }
+	CHECK(!Patch(b.data(),b.size(),0.5f,"HudIconManager",out));
+	CHECK(!Patch(b.data(),b.size(),1,"TitleMenu",out)); CHECK(!Patch(nullptr,b.size(),0.5f,"TitleMenu",out));
+	CHECK(!ValidScale(0.49f)); CHECK(!ValidScale(1.1f)); CHECK(!ValidScale(std::numeric_limits<float>::quiet_NaN()));
+	CHECK(!ValidScale(std::numeric_limits<float>::infinity()));
+	Bytes bad=b; bad[0]='C'; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
+	bad=b; bad[3]=11; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
+	bad=b; bad[8]=0; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
+	bad=b; bad[23]=8; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out)); // AS3.
+	bad=b; bad.back()=1; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
+	bad=b; bad[frame]=0x41; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out)); // ShowFrame payload.
+	bad=b; bad.insert(bad.end(),3,0); Length(bad); CHECK(Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
+	bad.back()=1; CHECK(!Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
+	bad=b; memcpy(bad.data(),"FWS",3); CHECK(Patch(bad.data(),bad.size(),0.5f,"TitleMenu",out));
+}
+#ifdef _WIN32
+static void HookTests()
+{
+	using namespace ac2_ui::detail;
+	CHECK(!ac2_ui::Install(nullptr,0.5f)); CHECK(!ac2_ui::Install(nullptr,1));
+	auto* game = static_cast<unsigned char*>(VirtualAlloc(nullptr,0x2190000,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE));
+	CHECK(game); if (!game) return;
+	auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(game); dos->e_magic=IMAGE_DOS_SIGNATURE; dos->e_lfanew=0x80;
+	auto* nt = reinterpret_cast<IMAGE_NT_HEADERS32*>(game+0x80); nt->Signature=IMAGE_NT_SIGNATURE;
+	nt->FileHeader.Machine=IMAGE_FILE_MACHINE_I386; nt->FileHeader.TimeDateStamp=0x5925ba62;
+	nt->OptionalHeader.Magic=IMAGE_NT_OPTIONAL_HDR32_MAGIC; nt->OptionalHeader.SizeOfImage=0x2190000;
+	memcpy(game+0x13ac405,"\x8b\x76\x04\x8b\x44\x24\x10\x83\xc6\x50",10);
+	memcpy(game+0x13b2dd0,"\x83\xec\x0c\x53\x56\x8d\x44\x24\x0c",9);
+	memcpy(game+0x13b28b0,"\x51\x53\x55\x56\x57",5);
+	const uintptr_t guards[]={0x13ac405,0x13b2dd0,0x13b28b0};
+	for (auto rva:guards) { game[rva]^=1; CHECK(!ac2_ui::Install(reinterpret_cast<HMODULE>(game),0.5f)); game[rva]^=1; CHECK(game[0x13b2dd0]==0x83); }
+	// Complete the displaced native prologues with executable status/stack-preservation stubs.
+	const unsigned char finishLoad[]={0x8b,0x44,0x24,0x18,0x8b,0x54,0x24,0x24,0x89,0x10,0x5e,0x5b,0x83,0xc4,0x0c,0xc2,0x10,0};
+	const unsigned char finishDestroy[]={0x5f,0x5e,0x5d,0x5b,0x59,0xc3};
+	memcpy(game+0x13b2dd0+9,finishLoad,sizeof(finishLoad)); memcpy(game+0x13b28b0+5,finishDestroy,sizeof(finishDestroy));
+	CHECK(ac2_ui::Install(reinterpret_cast<HMODULE>(game),0.5f)); CHECK(game[0x13b2dd0]==0xe9 && game[0x13b28b0]==0xe9);
+	CHECK(!ac2_ui::Install(reinterpret_cast<HMODULE>(game),0.5f));
+	uintptr_t state[24]={},item[40]={},table[8]={},type[9]={};
+	state[0]=0x1234; state[20]=reinterpret_cast<uintptr_t>(item)+8; item[25]=state[0];
+	item[0]=reinterpret_cast<uintptr_t>(table); table[4]=reinterpret_cast<uintptr_t>(game+0x1000);
+	const uintptr_t slot=reinterpret_cast<uintptr_t>(game+0x1c6b000),tp=reinterpret_cast<uintptr_t>(type);
+	game[0x1000]=0xa1; memcpy(game+0x1001,&slot,4); game[0x1005]=0xc3; memcpy(game+0x1c6b000,&tp,4);
+	type[8]=reinterpret_cast<uintptr_t>("TitleMenu");
+	Load entry=reinterpret_cast<Load>(game+0x13b2dd0); Destroy dispose=reinterpret_cast<Destroy>(game+0x13b28b0);
+	Bytes b=Movie(); int status=-2;
+	CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status && status==0); CHECK(buffers && retained==buffers->data.size());
+	size_t once=retained; CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status); CHECK(retained==once);
+	CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),uint32_t(-1))==&status && status==-1); CHECK(retained==once*2);
+	CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status); CHECK(retained==once);
+	CHECK(entry(state,&status,nullptr,0,0)==&status); CHECK(!buffers && retained==0);
+	entry(state,&status,b.data(),(uint32_t)b.size(),0); dispose(state); CHECK(!buffers && retained==0);
+	VirtualFree(reinterpret_cast<void*>(load),0,MEM_RELEASE); VirtualFree(reinterpret_cast<void*>(destroy),0,MEM_RELEASE);
+	load=nullptr; destroy=nullptr; DeleteCriticalSection(&storageLock); VirtualFree(game,0,MEM_RELEASE);
+}
+#endif
+int main(int argc, char** argv)
+{
+	TransformTests(); ParserTests();
+#ifdef _WIN32
+	HookTests();
+#endif
+	if (argc==2) { std::ifstream f(argv[1],std::ios::binary); Bytes b((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>()),out; CHECK(Patch(b.data(),b.size(),0.5f,"TitleMenu",out)); printf("Real movie: %u -> %u bytes\n",(unsigned)b.size(),(unsigned)out.size()); }
 	if (failures) return 1;
-	puts("UI scale tests passed: menu/corner transforms, native API calling convention, handle lifetime, idempotence, rollback, configuration guards and installed x86 hook.");
-	return 0;
+	puts("UI scale tests passed: movie validation, AVM1 transforms, corner anchors, replay guard and native hook lifetime."); return 0;
 }
