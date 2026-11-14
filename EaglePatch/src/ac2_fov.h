@@ -5,7 +5,7 @@
 
 namespace ac2_fov
 {
-bool Install(HMODULE gameModule, float fovMultiplier);
+bool Install(HMODULE gameModule, float fovMultiplier, bool lockFov = false);
 void LogSummary();
 
 namespace detail
