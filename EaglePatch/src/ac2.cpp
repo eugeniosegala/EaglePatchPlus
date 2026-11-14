@@ -523,7 +523,7 @@ void patch()
 		LogInfo("Shadow map resolution patched to 4096.");
 	}
 
-	ac2_shadows::Install(GetModuleHandle(NULL), get_private_profile_int("ShadowCascadeDistanceMultiplier", 6));
+	ac2_shadows::Install(GetModuleHandle(NULL), get_private_profile_int("ShadowCascadeDistanceMultiplier", 8));
 	ac2_fov::Install(GetModuleHandle(NULL), get_private_profile_float("FOVMultiplier", "1.0"),
 		get_private_profile_bool("LockFOV", FALSE) != FALSE);
 	ac2_ui::Install(GetModuleHandle(NULL), get_private_profile_float("UIScale", "1.0"));
