@@ -112,6 +112,8 @@ add_library(EaglePatchPlusAC2 SHARED
     EaglePatch/src/ac2_rumble.cpp
     EaglePatch/src/ac2_rumble.h
     EaglePatch/src/ac2_rumble_effects.h
+    EaglePatch/src/ac2_ui_scale.cpp
+    EaglePatch/src/ac2_ui_scale.h
 )
 
 target_include_directories(EaglePatchPlusAC2 PRIVATE ${SHARED_INCLUDE_DIRS})
@@ -193,6 +195,11 @@ if(BUILD_TESTING)
     add_executable(RumbleEffectsTests tests/test_rumble_effects.cpp)
     target_compile_features(RumbleEffectsTests PRIVATE cxx_std_14)
     add_test(NAME RumbleEffectsTests COMMAND RumbleEffectsTests)
+    add_executable(UiScaleTests tests/test_ui_scale.cpp EaglePatch/shared/logger.cpp patcher/patcher.cpp)
+    target_include_directories(UiScaleTests PRIVATE patcher)
+    target_compile_features(UiScaleTests PRIVATE cxx_std_14)
+    target_compile_definitions(UiScaleTests PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS NOMINMAX)
+    add_test(NAME UiScaleTests COMMAND UiScaleTests)
 endif()
 # ------------------------------------------------------------------------------
 # Target: Package Release

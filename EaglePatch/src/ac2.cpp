@@ -11,6 +11,7 @@
 #include "ac2_shadow_cascades.h"
 #include "ac2_fov.h"
 #include "ac2_rumble.h"
+#include "ac2_ui_scale.h"
 
 //#define INCLUDE_CONSOLE // add ability to allocate console window
 
@@ -524,6 +525,7 @@ void patch()
 
 	ac2_shadows::Install(GetModuleHandle(NULL), get_private_profile_int("ShadowCascadeDistanceMultiplier", 6));
 	ac2_fov::Install(GetModuleHandle(NULL), get_private_profile_float("FOVMultiplier", "1.0"));
+	ac2_ui::Install(GetModuleHandle(NULL), get_private_profile_float("UIScale", "1.0"));
 	if (!get_private_profile_bool("DisableXInputPatch", FALSE))
 	{
 		ac2_rumble::Config rumble;

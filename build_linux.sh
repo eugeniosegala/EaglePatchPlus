@@ -27,6 +27,7 @@ entries = [
     ("EaglePatch/src/ac2_shadow_cascades.cpp", "EaglePatchAC2"),
     ("EaglePatch/src/ac2_fov.cpp", "EaglePatchAC2"),
     ("EaglePatch/src/ac2_rumble.cpp", "EaglePatchAC2"),
+    ("EaglePatch/src/ac2_ui_scale.cpp", "EaglePatchAC2"),
     ("patcher/patcher.cpp", "EaglePatch"),
     ("patcher/crt_sections.cpp", "EaglePatch"),
     ("EaglePatch/shared/console.cpp", "EaglePatch"),
@@ -37,6 +38,7 @@ entries = [
     ("tests/test_shadow_cascades.cpp", "ShadowCascadeTests"),
     ("tests/test_fov.cpp", "FovTests"),
     ("tests/test_rumble_effects.cpp", "RumbleEffectsTests"),
+    ("tests/test_ui_scale.cpp", "UiScaleTests"),
 ]
 cc = [{"directory": repo, "file": os.path.join(repo, p), "arguments": list(base_flags) + [f"-DDLL_NAME=\"{d}\"", "-c", os.path.join(repo, p)]} for p, d in entries]
 with open("compile_commands.json", "w") as f:
@@ -96,7 +98,8 @@ clang++ -shared -O2 $TARGET_FLAGS -fuse-ld=lld \
     EaglePatch/src/ac2.cpp \
     EaglePatch/src/ac2_shadow_cascades.cpp \
     EaglePatch/src/ac2_fov.cpp \
-    EaglePatch/src/ac2_rumble.cpp $EXTRA_LIBS -luser32
+    EaglePatch/src/ac2_rumble.cpp \
+    EaglePatch/src/ac2_ui_scale.cpp $EXTRA_LIBS -luser32
 
 echo "Packaging EaglePatch+AC2..."
 cp "EaglePatch/EaglePatchAC2.ini" "dist/EaglePatch+AC2/scripts/"
@@ -142,12 +145,19 @@ clang++ -O2 $TEST_FLAGS -fuse-ld=lld $TEST_INCLUDES \
     -o "dist/RumbleEffectsTests.exe" \
     tests/test_rumble_effects.cpp $TEST_EXTRA_LIBS
 
+echo "Building UI Scale Tests..."
+clang++ -O2 $TEST_FLAGS -fuse-ld=lld -fms-extensions -fasm-blocks $TEST_INCLUDES \
+    -Ipatcher -DWIN32_LEAN_AND_MEAN -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -D_NO_CRT_STDIO_INLINE \
+    -o "dist/UiScaleTests.exe" tests/test_ui_scale.cpp \
+    EaglePatch/shared/logger.cpp patcher/patcher.cpp $TEST_EXTRA_LIBS
+
 if command -v wine >/dev/null 2>&1; then
     echo "Running Unit Tests with Wine..."
     WINEDEBUG=-all wine dist/EaglePatchTests.exe
     WINEDEBUG=-all wine dist/ShadowCascadeTests.exe
     WINEDEBUG=-all wine dist/FovTests.exe
     WINEDEBUG=-all wine dist/RumbleEffectsTests.exe
+    WINEDEBUG=-all wine dist/UiScaleTests.exe
 fi
 
 # Clean up temporary linker export files (.lib, .exp) to leave exactly 2 release files
