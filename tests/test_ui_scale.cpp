@@ -9,10 +9,11 @@ static unsigned failures = 0;
 static double px, py, sx, sy;
 static unsigned opens, closes, writes;
 static bool available, rejectScale;
+static void* expectedPlayer;
 static uintptr_t item[40];
 static Root* __fastcall OpenRoot(Root* root, void*, void* player, const wchar_t* path)
 {
-	CHECK(player == reinterpret_cast<void*>(0x1234));
+	CHECK(player == expectedPlayer);
 	CHECK(!wcscmp(path, L"_root") || !wcscmp(path, L"_level0"));
 	root->value = available ? 1 : 0; ++opens; return root;
 }
@@ -34,6 +35,7 @@ static void Reset()
 	multiplier = 0.5f; px = py = 0; sx = sy = 100;
 	opens = closes = writes = 0; available = true; rejectScale = false;
 	memset(item, 0, sizeof(item)); item[0x64/4] = 0x1234;
+	expectedPlayer = reinterpret_cast<void*>(0x1234);
 }
 static void TransformTests()
 {
@@ -72,28 +74,33 @@ static void InstallationTests()
 	nt->Signature = IMAGE_NT_SIGNATURE; nt->FileHeader.Machine = IMAGE_FILE_MACHINE_I386;
 	nt->FileHeader.TimeDateStamp = 0x5925ba62;
 	nt->OptionalHeader.Magic = IMAGE_NT_OPTIONAL_HDR32_MAGIC; nt->OptionalHeader.SizeOfImage = 0x2190000;
-	const uintptr_t offsets[] = {0x10566c0,0x13ae6a0,0x13aff30,0x13ae1e0,0x13af2f0,0x13af460,0x13ae820,0x13ae9a0};
-	const char* bytes[] = {"\x55\x8b\xec\x6a\xff\x68\x20\xcd", "\x8b\x44\x24\x04\x85\xc0\x57\x8b\xf9",
+	const uintptr_t offsets[] = {0x13ac440,0x13ac405,0x13ae6a0,0x13aff30,0x13ae1e0,0x13af2f0,0x13af460,0x13ae820,0x13ae9a0};
+	const char* bytes[] = {"\x56\x8b\xf1\x57\x8b\x7e\x04", "\x8b\x76\x04\x8b\x44\x24\x10\x83\xc6\x50", "\x8b\x44\x24\x04\x85\xc0\x57\x8b\xf9",
 		"\x51\x53\x8b\xd9\x8b\x03\x85\xc0", "\x8b\x01\x85\xc0\x74\x0c\x83\x78\x1c\x00",
 		"\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e", "\x83\xec\x14\x57\x8b\xf9\x8b\x07\x85\xc0",
 		"\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e", "\x57\x8b\xf9\x8b\x07\x85\xc0\x75\x0e"};
-	const unsigned lengths[] = {8,9,8,10,9,10,9,9};
-	for (unsigned i = 0; i < 8; ++i) memcpy(game + offsets[i], bytes[i], lengths[i]);
+	const unsigned lengths[] = {7,10,9,8,10,9,10,9,9};
+	for (unsigned i = 0; i < 9; ++i) memcpy(game + offsets[i], bytes[i], lengths[i]);
 	HMODULE module = reinterpret_cast<HMODULE>(game);
-	for (unsigned i = 0; i < 8; ++i)
+	for (unsigned i = 0; i < 9; ++i)
 	{
 		game[offsets[i]] ^= 1;
 		CHECK(!ac2_ui::Install(module, 0.5f));
 		game[offsets[i]] ^= 1;
-		CHECK(game[offsets[0]] == 0x55);
+		CHECK(game[offsets[0]] == 0x56);
 	}
 	nt->FileHeader.TimeDateStamp ^= 1; CHECK(!ac2_ui::Install(module, 0.5f)); nt->FileHeader.TimeDateStamp ^= 1;
-	// Complete the displaced prologue with a synthetic original function epilogue.
-	memcpy(game + offsets[0] + 8, "\xc7\x01\x8b\xe5\x5d\xc3", 6);
+	// Return the original status pointer/value after the displaced prologue.
+	const unsigned char finish[] = {0x8b,0x44,0x24,0x0c,0xc7,0x00,0x2a,0,0,0,0x5f,0x5e,0xc2,8,0};
+	memcpy(game + offsets[0] + 7, finish, sizeof(finish));
 	CHECK(ac2_ui::Install(module, 0.5f));
 	CHECK(game[offsets[0]] == 0xe9);
 	CHECK(!ac2_ui::Install(module, 0.5f));
 	Reset();
+	uintptr_t player[2] = {}, state[24] = {};
+	player[1] = reinterpret_cast<uintptr_t>(state);
+	state[0x50/4] = reinterpret_cast<uintptr_t>(item) + 8;
+	item[0x64/4] = reinterpret_cast<uintptr_t>(player); expectedPlayer = player;
 	uintptr_t table[8] = {}, type[9] = {};
 	const uintptr_t getter = reinterpret_cast<uintptr_t>(game + 0x1000), slot = reinterpret_cast<uintptr_t>(game + 0x1c6b000);
 	game[0x1000] = 0xa1; memcpy(game + 0x1001, &slot, 4); game[0x1005] = 0xc3;
@@ -104,10 +111,15 @@ static void InstallationTests()
 	char name[64] = {};
 	CHECK(TypeName(item, name) && !strcmp(name, "MenuManager"));
 	// The real installed x86 jump and trampoline must return with the original thiscall stack intact.
-	reinterpret_cast<Initialize>(game + offsets[0])(item);
+	int status = -1;
+	CHECK(reinterpret_cast<Advance>(game + offsets[0])(player, &status, 0.0f) == &status);
+	CHECK(status == 42);
 	CHECK(sx == 50 && sy == 50 && px == 320 && py == 180 && opens == closes);
-	VirtualFree(reinterpret_cast<void*>(initialize), 0, MEM_RELEASE);
-	initialize = nullptr;
+	// A deferred reload uses the same hook and must not compound the transform.
+	CHECK(reinterpret_cast<Advance>(game + offsets[0])(player, &status, 0.0f) == &status);
+	CHECK(sx == 50 && sy == 50 && px == 320 && py == 180 && writes == 2);
+	VirtualFree(reinterpret_cast<void*>(advance), 0, MEM_RELEASE);
+	advance = nullptr;
 	VirtualFree(game, 0, MEM_RELEASE);
 }
 int main()

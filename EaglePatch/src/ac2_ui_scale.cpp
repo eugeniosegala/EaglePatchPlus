@@ -15,10 +15,10 @@ using Close = void(__thiscall*)(Root*);
 using Valid = int(__thiscall*)(Root*);
 using GetPair = int*(__thiscall*)(Root*, int*, double*, double*);
 using SetPair = int*(__thiscall*)(Root*, int*, double, double);
-using Initialize = void(__thiscall*)(void*);
+using Advance = int*(__thiscall*)(void*, int*, float);
 struct Api { Open open; Close close; Valid valid; GetPair position, scale; SetPair setPosition, setScale; };
 Api api = {};
-Initialize initialize = nullptr;
+Advance advance = nullptr;
 uintptr_t image = 0;
 float multiplier = 1.0f;
 volatile LONG applied = 0, skipped = 0;
@@ -108,16 +108,21 @@ bool Apply(void* item, const char* name)
 	api.close(&root);
 	return ok;
 }
-void __fastcall InitializeHook(void* item, void*)
+int* __fastcall AdvanceHook(void* player, void*, int* status, float elapsed)
 {
-	initialize(item);
+	int* result = advance(player, status, elapsed);
+	uintptr_t state = 0, bridge = 0, itemPlayer = 0;
+	if (!Read(reinterpret_cast<uintptr_t>(player) + 4, &state, 4) || !Read(state + 0x50, &bridge, 4) || bridge < 8 ||
+		!Read(bridge - 8 + 0x64, &itemPlayer, 4) || itemPlayer != reinterpret_cast<uintptr_t>(player)) return result;
+	void* item = reinterpret_cast<void*>(bridge - 8);
 	char name[64] = {};
-	if (!TypeName(item, name)) return;
+	if (!TypeName(item, name)) return result;
 	if (Apply(item, name))
 	{
 		if (InterlockedIncrement(&applied) <= 8) LogInfo("UIScale: scaled %s to %.0f%%.", name[0] ? name : "Flash interface", multiplier * 100);
 	}
 	else if (InterlockedIncrement(&skipped) <= 3) LogInfo("UIScale: left %s unchanged (root unavailable, already scaled or custom transform).", name[0] ? name : "Flash interface");
+	return result;
 }
 }
 
@@ -129,10 +134,12 @@ bool Install(HMODULE game, float scale)
 	if (!ac2_image::IsVerifiedSteamImage(game))
 	{ LogWarn("UIScale: executable layout is not verified; skipped."); return false; }
 	const uintptr_t base = reinterpret_cast<uintptr_t>(game);
-	// Steam Digital UPlay: FireItem initialization and native Flash MovieClip APIs.
+	// Steam Digital UPlay: the initial/deferred load step and native Flash MovieClip APIs.
+	// The verified callback setter stores FireItem's interface at item+8 in player.state+0x50.
 	struct Signature { uintptr_t rva; const char* bytes; size_t size; };
 	const Signature signatures[] = {
-		{0x10566c0, "\x55\x8b\xec\x6a\xff\x68\x20\xcd", 8},
+		{0x13ac440, "\x56\x8b\xf1\x57\x8b\x7e\x04", 7},
+		{0x13ac405, "\x8b\x76\x04\x8b\x44\x24\x10\x83\xc6\x50", 10},
 		{0x13ae6a0, "\x8b\x44\x24\x04\x85\xc0\x57\x8b\xf9", 9},
 		{0x13aff30, "\x51\x53\x8b\xd9\x8b\x03\x85\xc0", 8},
 		{0x13ae1e0, "\x8b\x01\x85\xc0\x74\x0c\x83\x78\x1c\x00", 10},
@@ -147,33 +154,33 @@ bool Install(HMODULE game, float scale)
 		if (!ac2_image::IsReadable(address, signature.size) || memcmp(address, signature.bytes, signature.size))
 		{ LogWarn("UIScale: UI code differs or is already hooked; skipped."); return false; }
 	}
-	unsigned char* target = reinterpret_cast<unsigned char*>(base + 0x10566c0);
+	unsigned char* target = reinterpret_cast<unsigned char*>(base + 0x13ac440);
 	unsigned char* original = static_cast<unsigned char*>(VirtualAlloc(nullptr, 16, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
 	if (!original) return false;
-	memcpy(original, target, 5);
-	original[5] = 0xe9;
-	const uint32_t back = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target + 5) - reinterpret_cast<uintptr_t>(original + 10));
-	memcpy(original + 6, &back, 4);
+	memcpy(original, target, 7);
+	original[7] = 0xe9;
+	const uint32_t back = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target + 7) - reinterpret_cast<uintptr_t>(original + 12));
+	memcpy(original + 8, &back, 4);
 	DWORD protect = 0, old = 0;
-	if (!VirtualProtect(original, 16, PAGE_EXECUTE_READ, &protect) || !FlushInstructionCache(GetCurrentProcess(), original, 16) || !Unprotect_internal(target, 5, &old))
+	if (!VirtualProtect(original, 16, PAGE_EXECUTE_READ, &protect) || !FlushInstructionCache(GetCurrentProcess(), original, 16) || !Unprotect_internal(target, 7, &old))
 	{ VirtualFree(original, 0, MEM_RELEASE); return false; }
 	detail::image = base;
 	detail::multiplier = scale;
-	detail::initialize = reinterpret_cast<detail::Initialize>(original);
+	detail::advance = reinterpret_cast<detail::Advance>(original);
 	detail::api = {reinterpret_cast<detail::Open>(base + 0x13ae6a0), reinterpret_cast<detail::Close>(base + 0x13aff30),
 		reinterpret_cast<detail::Valid>(base + 0x13ae1e0), reinterpret_cast<detail::GetPair>(base + 0x13af2f0),
 		reinterpret_cast<detail::GetPair>(base + 0x13af460), reinterpret_cast<detail::SetPair>(base + 0x13ae820),
 		reinterpret_cast<detail::SetPair>(base + 0x13ae9a0)};
-	unsigned char jump[5] = {0xe9};
-	const uint32_t displacement = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&detail::InitializeHook) - reinterpret_cast<uintptr_t>(target + 5));
+	unsigned char jump[7] = {0xe9, 0, 0, 0, 0, 0x90, 0x90};
+	const uint32_t displacement = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&detail::AdvanceHook) - reinterpret_cast<uintptr_t>(target + 5));
 	memcpy(jump + 1, &displacement, 4);
-	memcpy(target, jump, 5);
-	if (!Protect_internal(target, 5, old))
+	memcpy(target, jump, 7);
+	if (!Protect_internal(target, 7, old))
 	{
-		memcpy(target, original, 5);
-		Protect_internal(target, 5, old);
+		memcpy(target, original, 7);
+		Protect_internal(target, 7, old);
 		VirtualFree(original, 0, MEM_RELEASE);
-		detail::initialize = nullptr;
+		detail::advance = nullptr;
 		LogWarn("UIScale: could not restore code protection; original code restored.");
 		return false;
 	}
