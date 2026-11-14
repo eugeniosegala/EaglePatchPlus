@@ -9,6 +9,7 @@
 #include "../shared/utils.h"
 #include "../shared/logger.h"
 #include "ac2_shadow_cascades.h"
+#include "ac2_fov.h"
 
 //#define INCLUDE_CONSOLE // add ability to allocate console window
 
@@ -520,6 +521,7 @@ void patch()
 	}
 
 	ac2_shadows::Install(GetModuleHandle(NULL), get_private_profile_int("ShadowCascadeDistanceMultiplier", 6));
+	ac2_fov::Install(GetModuleHandle(NULL), get_private_profile_float("FOVMultiplier", "1.0"));
 
 	if (get_private_profile_bool("ImproveDrawDistance", TRUE))
 	{
@@ -706,6 +708,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
 	else if (fdwReason == DLL_PROCESS_DETACH)
 	{
 		ac2_shadows::LogSummary();
+		ac2_fov::LogSummary();
 		ShutdownLogging();
 	}
 

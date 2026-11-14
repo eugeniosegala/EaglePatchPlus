@@ -106,6 +106,9 @@ add_library(EaglePatchPlusAC2 SHARED
     EaglePatch/src/ac2.cpp
     EaglePatch/src/ac2_shadow_cascades.cpp
     EaglePatch/src/ac2_shadow_cascades.h
+    EaglePatch/src/ac2_fov.cpp
+    EaglePatch/src/ac2_fov.h
+    EaglePatch/src/ac2_image.h
 )
 
 target_include_directories(EaglePatchPlusAC2 PRIVATE ${SHARED_INCLUDE_DIRS})
@@ -172,6 +175,17 @@ if(BUILD_TESTING)
     target_compile_definitions(ShadowCascadeTests PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS NOMINMAX)
     target_compile_options(ShadowCascadeTests PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/fp:strict>)
     add_test(NAME ShadowCascadeTests COMMAND ShadowCascadeTests)
+    add_executable(FovTests
+        tests/test_fov.cpp
+        EaglePatch/src/ac2_fov.cpp
+        EaglePatch/shared/logger.cpp
+        patcher/patcher.cpp
+    )
+    target_include_directories(FovTests PRIVATE patcher)
+    target_compile_definitions(FovTests PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS NOMINMAX)
+    # Test the implementation with the plugin's /fp:fast; keep NaN checks in the harness strict.
+    set_source_files_properties(tests/test_fov.cpp PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>")
+    add_test(NAME FovTests COMMAND FovTests)
 endif()
 # ------------------------------------------------------------------------------
 # Target: Package Release

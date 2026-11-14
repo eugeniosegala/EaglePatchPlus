@@ -1,4 +1,5 @@
 #include "ac2_shadow_cascades.h"
+#include "ac2_image.h"
 
 #include <string.h>
 
@@ -112,19 +113,6 @@ NAKED void Hook()
 }
 }
 
-static bool IsReadable(const void* address, size_t size)
-{
-	if (!address || !size)
-		return false;
-	MEMORY_BASIC_INFORMATION memory = {};
-	if (VirtualQuery(address, &memory, sizeof(memory)) != sizeof(memory) || memory.State != MEM_COMMIT ||
-		(memory.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
-		return false;
-	const uintptr_t start = reinterpret_cast<uintptr_t>(address);
-	const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(memory.BaseAddress) + memory.RegionSize;
-	return start <= regionEnd && size <= regionEnd - start;
-}
-
 bool Install(HMODULE gameModule, unsigned int distanceMultiplier)
 {
 	if (distanceMultiplier == 1)
@@ -138,22 +126,12 @@ bool Install(HMODULE gameModule, unsigned int distanceMultiplier)
 		return false;
 	}
 
-	const uintptr_t base = reinterpret_cast<uintptr_t>(gameModule);
-	const IMAGE_DOS_HEADER* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-	if (!IsReadable(dos, sizeof(*dos)) || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < sizeof(*dos) ||
-		dos->e_lfanew > 0x1000)
-	{
-		LogWarn("Shadow cascade patch: invalid game image; skipped.");
-		return false;
-	}
-	const IMAGE_NT_HEADERS32* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
-	if (!IsReadable(nt, sizeof(*nt)) || nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386 ||
-		nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC || nt->FileHeader.TimeDateStamp != 0x5925BA62 ||
-		nt->OptionalHeader.SizeOfImage != 0x2190000)
+	if (!ac2_image::IsVerifiedSteamImage(gameModule))
 	{
 		LogWarn("Shadow cascade patch: this executable layout is not verified; other EaglePatch fixes remain enabled.");
 		return false;
 	}
+	const uintptr_t base = reinterpret_cast<uintptr_t>(gameModule);
 
 	// Current Steam executable (Digital UPlay layout), inspected after Steam's
 	// loader has initialized it. No unverified Retail address or stack layout.
@@ -162,7 +140,7 @@ bool Install(HMODULE gameModule, unsigned int distanceMultiplier)
 		0x8B, 0x73, 0x14, 0x8B, 0x43, 0x10, 0x8D, 0x8E, 0xE0, 0x00, 0x00, 0x00,
 		0x33, 0xFF, 0xF3, 0x0F, 0x11, 0x45, 0xD4, 0x89, 0x45, 0xD8, 0x89, 0x4D
 	};
-	if (!IsReadable(target, sizeof(expected)) || memcmp(target, expected, sizeof(expected)) != 0)
+	if (!ac2_image::IsReadable(target, sizeof(expected)) || memcmp(target, expected, sizeof(expected)) != 0)
 	{
 		LogWarn("Shadow cascade patch: code signature changed or already hooked; skipped. Remove AC2ShadowRadius.asi if installed.");
 		return false;
