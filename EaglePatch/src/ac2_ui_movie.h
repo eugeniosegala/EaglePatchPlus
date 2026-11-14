@@ -30,22 +30,63 @@ inline void PushNumber(Bytes& actions, float value)
 	actions.push_back(0x96); Put16(actions, 5); actions.push_back(1);
 	uint32_t bits; memcpy(&bits, &value, 4); Put32(actions, bits);
 }
-inline void Root(Bytes& actions) { PushString(actions, "_root"); actions.push_back(0x1c); }
-inline void Property(Bytes& actions, const char* key, float scale, float offset)
+inline void Variable(Bytes& actions, const char* name) { PushString(actions, name); actions.push_back(0x1c); }
+inline void Root(Bytes& actions) { Variable(actions, "_root"); }
+inline void Property(Bytes& actions, const char* key, float scale, float offset, const char* object = "_root")
 {
-	Root(actions); PushString(actions, key);
-	Root(actions); PushString(actions, key); actions.push_back(0x4e);
+	Variable(actions, object); PushString(actions, key);
+	Variable(actions, object); PushString(actions, key); actions.push_back(0x4e);
 	PushNumber(actions, scale); actions.push_back(0x0c);
 	if (offset != 0) { PushNumber(actions, offset); actions.push_back(0x0a); }
 	actions.push_back(0x4f);
 }
-inline Bytes Actions(float scale, float x, float y)
+inline Bytes ComponentActions(float scale, float width, float height)
+{
+	// The master loads these full-screen HUD movies asynchronously into separate clips.
+	// Compensate their shared root's centered transform in the parent's coordinates.
+	struct Component { const char* name; float x, y; };
+	const Component components[] = {{"HUD_Controls",1,0},{"HUD_Equipment",0,1},{"HUD_Money",0,1},{"HUD_Subtitles",0.5f,1}};
+	Bytes body, actions;
+	for (const auto& component : components)
+	{
+		Bytes adjust;
+		Property(adjust, "_x", 1, (component.x - 0.5f) * width * (1 - scale) / scale, "target");
+		Property(adjust, "_y", 1, (component.y - 0.5f) * height * (1 - scale) / scale, "target");
+		Variable(body, "target"); PushString(body, "_name"); body.push_back(0x4e);
+		PushString(body, component.name); body.push_back(0x49); body.push_back(0x12);
+		body.push_back(0x9d); Put16(body, 2); Put16(body, (uint16_t)adjust.size());
+		body.insert(body.end(), adjust.begin(), adjust.end());
+	}
+	Variable(body, "target"); PushString(body, marker); PushNumber(body, scale); body.push_back(0x4f);
+	Variable(actions, "target"); PushString(actions, marker); actions.push_back(0x4e);
+	actions.push_back(0x9d); Put16(actions, 2); Put16(actions, (uint16_t)body.size());
+	actions.insert(actions.end(), body.begin(), body.end()); actions.push_back(0);
+	return actions;
+}
+inline Bytes ComponentListener(float scale, float width, float height)
+{
+	Bytes actions, function = ComponentActions(scale, width, height), header;
+	// Add a load listener alongside the game's listener, after its initialization completes.
+	PushString(actions, "onLoadInit");
+	header.push_back(0); Put16(header, 1);
+	const char parameter[] = "target"; header.insert(header.end(), parameter, parameter + sizeof(parameter));
+	Put16(header, (uint16_t)function.size());
+	actions.push_back(0x9b); Put16(actions, (uint16_t)header.size());
+	actions.insert(actions.end(), header.begin(), header.end()); actions.insert(actions.end(), function.begin(), function.end());
+	PushNumber(actions, 1); actions.push_back(0x43); // {onLoadInit: function(target) {...}}
+	PushNumber(actions, 1); Root(actions); PushString(actions, "hudMasterScript"); actions.push_back(0x4e);
+	PushString(actions, "m_MovieClipLoader"); actions.push_back(0x4e);
+	PushString(actions, "addListener"); actions.push_back(0x52); actions.push_back(0x17);
+	return actions;
+}
+inline Bytes Actions(float scale, float x, float y, const Bytes& extras = Bytes())
 {
 	// AVM1 GetVariable/GetMember/SetMember; see Adobe's SWF 10 format specification.
 	// The marker prevents repeated first-frame actions from compounding the scale.
 	Bytes body, actions;
 	Property(body, "_xscale", scale, 0); Property(body, "_yscale", scale, 0);
 	Property(body, "_x", scale, x * (1 - scale)); Property(body, "_y", scale, y * (1 - scale));
+	body.insert(body.end(), extras.begin(), extras.end());
 	Root(body); PushString(body, marker); PushNumber(body, scale); body.push_back(0x4f);
 	Root(actions); PushString(actions, marker); actions.push_back(0x4e);
 	actions.push_back(0x9d); Put16(actions, 2); Put16(actions, (uint16_t)body.size());
@@ -108,7 +149,9 @@ inline bool Patch(const unsigned char* data, size_t size, float scale, const cha
 	float ax, ay; Anchor(type, ax, ay);
 	ax = (bounds[0] + (bounds[1] - bounds[0]) * ax) / 20.0f;
 	ay = (bounds[2] + (bounds[3] - bounds[2]) * ay) / 20.0f;
-	Bytes actions = Actions(scale, ax, ay), tag;
+	const Bytes extras = !strcmp(type, "MultiComponentShowingFireItem") ?
+		ComponentListener(scale, (bounds[1] - bounds[0]) / 20.0f, (bounds[3] - bounds[2]) / 20.0f) : Bytes();
+	Bytes actions = Actions(scale, ax, ay, extras), tag;
 	Put16(tag, (12 << 6) | 63); Put32(tag, (uint32_t)actions.size()); tag.insert(tag.end(), actions.begin(), actions.end());
 	output.reserve(size + tag.size());
 	output.insert(output.end(), data, data + frame); output.insert(output.end(), tag.begin(), tag.end()); output.insert(output.end(), data + frame, data + size);

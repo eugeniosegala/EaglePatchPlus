@@ -30,7 +30,7 @@ struct Value
 	explicit Value(const char* s) : text(s) {}
 };
 // Independent interpreter for the AVM1 instructions emitted by the patch.
-static bool Execute(const Bytes& code, std::map<std::string, float>& root)
+static bool Execute(const Bytes& code, std::map<std::string, float>& root, const char* targetName = nullptr)
 {
 	std::vector<Value> stack;
 	auto pop = [&]() { Value v = stack.back(); stack.pop_back(); return v; };
@@ -53,11 +53,11 @@ static bool Execute(const Bytes& code, std::map<std::string, float>& root)
 			else return false;
 			pc = end;
 		}
-		else if (op == 0x1c) { if (stack.empty() || pop().text != "_root") return false; Value v; v.root = true; stack.push_back(v); }
+		else if (op == 0x1c) { if (stack.empty()) return false; auto name = pop().text; if (name != "_root" && !(targetName && name == "target")) return false; Value v; v.root = true; stack.push_back(v); }
 		else if (op == 0x4e)
 		{
 			if (stack.size() < 2) return false; Value key = pop(), obj = pop(); if (!obj.root) return false;
-			stack.push_back(Value(root[key.text]));
+			stack.push_back(targetName && key.text == "_name" ? Value(targetName) : Value(root[key.text]));
 		}
 		else if (op == 0x4f)
 		{
@@ -75,9 +75,30 @@ static bool Execute(const Bytes& code, std::map<std::string, float>& root)
 			const int offset = (int16_t)U16(&code[pc]); pc = end;
 			if (pop().number != 0) { if (offset < 0 || size_t(offset) > code.size() - pc) return false; pc += offset; }
 		}
+		else if (op == 0x49) { if (stack.size() < 2) return false; Value b = pop(), a = pop(); stack.push_back(Value(float(a.text == b.text))); }
+		else if (op == 0x12) { if (stack.empty()) return false; stack.push_back(Value(float(pop().number == 0))); }
 		else return false;
 	}
 	return false;
+}
+static void ComponentTests()
+{
+	struct Case { const char* name; float x, y; };
+	const Case cases[] = {{"HUD_Controls",640,-360},{"HUD_Equipment",-640,360},{"HUD_Money",-640,360},{"HUD_Subtitles",0,360},{"Unrelated",0,0}};
+	for (const auto& c : cases)
+	{
+		Bytes function = ComponentActions(0.5f,1280,720);
+		std::map<std::string,float> clip = {{"_x",20},{"_y",40},{"_xscale",100},{"_yscale",100}};
+		CHECK(Execute(function,clip,c.name)); CHECK(clip["_x"] == 20+c.x && clip["_y"] == 40+c.y);
+		CHECK(clip["_xscale"] == 100 && clip["_yscale"] == 100); // Shared root already provides the scale.
+		auto once = clip; CHECK(Execute(function,clip,c.name)); CHECK(clip == once);
+	}
+	// Verify the listener's embedded function header and body independently.
+	Bytes listener = ComponentListener(0.5f,1280,720); size_t p = 3 + U16(listener.data()+1);
+	CHECK(listener[p] == 0x9b); unsigned headerSize = U16(listener.data()+p+1); p += 3;
+	CHECK(listener[p] == 0 && U16(listener.data()+p+1) == 1 && !strcmp(reinterpret_cast<const char*>(listener.data()+p+3),"target"));
+	CHECK(U16(listener.data()+p+headerSize-2) == ComponentActions(0.5f,1280,720).size());
+	CHECK(!memcmp(listener.data()+p+headerSize,ComponentActions(0.5f,1280,720).data(),ComponentActions(0.5f,1280,720).size()));
 }
 static void TransformTests()
 {
@@ -161,7 +182,7 @@ static void HookTests()
 #endif
 int main(int argc, char** argv)
 {
-	TransformTests(); ParserTests();
+	TransformTests(); ParserTests(); ComponentTests();
 #ifdef _WIN32
 	HookTests();
 #endif
