@@ -11,6 +11,7 @@ Features:
 - Added borderless windowed mode option (BorderlessWindow) with frame refresh in ini (currently supported on AC2 Digital UPlay)
 - Enables UPlay bonuses - Auditore Crypt, Altair robes, extra knives, bonus dye (can be disabled in ini)
 - Added support of all XInput controllers, including PS4/PS5 controllers via standard wrappers/Steam Input (can be disabled in ini)
+- Added adjustable rumble for attacks, parries, landings and climbing (Steam Digital UPlay only)
 - Added dynamic 4-slot XInput auto-reconnect scanning for seamless controller hotplugging
 - Robust controller hotplugging with null-safety protection (prevents crashes on controller disconnect/reconnect)
 - Removed support of DInput controllers (can be disabled in ini; FPS limiter can remain active independently)

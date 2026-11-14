@@ -26,6 +26,7 @@ entries = [
     ("EaglePatch/src/ac2.cpp", "EaglePatchAC2"),
     ("EaglePatch/src/ac2_shadow_cascades.cpp", "EaglePatchAC2"),
     ("EaglePatch/src/ac2_fov.cpp", "EaglePatchAC2"),
+    ("EaglePatch/src/ac2_rumble.cpp", "EaglePatchAC2"),
     ("patcher/patcher.cpp", "EaglePatch"),
     ("patcher/crt_sections.cpp", "EaglePatch"),
     ("EaglePatch/shared/console.cpp", "EaglePatch"),
@@ -35,6 +36,7 @@ entries = [
     ("tests/test_ini_reader.cpp", "EaglePatchTests"),
     ("tests/test_shadow_cascades.cpp", "ShadowCascadeTests"),
     ("tests/test_fov.cpp", "FovTests"),
+    ("tests/test_rumble_effects.cpp", "RumbleEffectsTests"),
 ]
 cc = [{"directory": repo, "file": os.path.join(repo, p), "arguments": list(base_flags) + [f"-DDLL_NAME=\"{d}\"", "-c", os.path.join(repo, p)]} for p, d in entries]
 with open("compile_commands.json", "w") as f:
@@ -93,7 +95,8 @@ clang++ -shared -O2 $TARGET_FLAGS -fuse-ld=lld \
     EaglePatch/shared/logger.cpp \
     EaglePatch/src/ac2.cpp \
     EaglePatch/src/ac2_shadow_cascades.cpp \
-    EaglePatch/src/ac2_fov.cpp $EXTRA_LIBS
+    EaglePatch/src/ac2_fov.cpp \
+    EaglePatch/src/ac2_rumble.cpp $EXTRA_LIBS -luser32
 
 echo "Packaging EaglePatch+AC2..."
 cp "EaglePatch/EaglePatchAC2.ini" "dist/EaglePatch+AC2/scripts/"
@@ -134,12 +137,17 @@ clang++ -O2 $TEST_FLAGS -fuse-ld=lld \
     EaglePatch/shared/logger.cpp \
     patcher/patcher.cpp \
     $TEST_EXTRA_LIBS
+echo "Building Rumble Effect Tests..."
+clang++ -O2 $TEST_FLAGS -fuse-ld=lld $TEST_INCLUDES \
+    -o "dist/RumbleEffectsTests.exe" \
+    tests/test_rumble_effects.cpp $TEST_EXTRA_LIBS
 
 if command -v wine >/dev/null 2>&1; then
     echo "Running Unit Tests with Wine..."
     WINEDEBUG=-all wine dist/EaglePatchTests.exe
     WINEDEBUG=-all wine dist/ShadowCascadeTests.exe
     WINEDEBUG=-all wine dist/FovTests.exe
+    WINEDEBUG=-all wine dist/RumbleEffectsTests.exe
 fi
 
 # Clean up temporary linker export files (.lib, .exp) to leave exactly 2 release files
