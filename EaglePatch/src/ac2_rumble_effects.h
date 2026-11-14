@@ -23,7 +23,7 @@ inline Effect CombatEffect(bool committed, unsigned int response, bool ownerIsPl
 }
 class Mixer
 {
-	struct Pulse { uint32_t start = 0, duration = 0; Motors motors; bool active = false, emitted = false; };
+	struct Pulse { uint32_t start = 0, duration = 0, hold = 0; Motors motors; bool active = false, emitted = false; };
 	Pulse pulses[(unsigned int)Effect::Count];
 public:
 	void Clear() { for (auto& p : pulses) p = Pulse{}; }
@@ -33,11 +33,13 @@ public:
 		if (!strength || !i || i >= (unsigned int)Effect::Count) return false;
 		static const uint32_t durations[] = {0, 85, 65, 160, 35, 55, 80};
 		static const uint32_t cooldowns[] = {0, 80, 100, 250, 170, 170, 150};
-		static const Motors levels[] = {{0,0}, {26000,41000}, {32000,50000}, {54000,22000}, {10000,28000}, {18000,36000}, {12000,50000}};
+		static const Motors levels[] = {{0,0}, {26000,41000}, {32000,50000}, {54000,36000}, {10000,28000}, {18000,36000}, {12000,50000}};
 		auto& p = pulses[i];
 		if (p.emitted && now - p.start < cooldowns[i]) return false;
 		strength = Percent(strength);
 		p.start = now; p.duration = durations[i]; p.active = p.emitted = true;
+		// Give landing motors time to start before fading, especially on medium drops.
+		p.hold = (effect == Effect::Landing || effect == Effect::SoftLanding) ? p.duration / 4 : 0;
 		p.motors = {(uint16_t)(levels[i].low * strength / 100), (uint16_t)(levels[i].high * strength / 100)};
 		return true;
 	}
@@ -48,8 +50,10 @@ public:
 			if (!p.active) continue;
 			const uint32_t age = now - p.start;
 			if (age >= p.duration) { p.active = false; continue; }
-			const uint16_t low = (uint16_t)((uint32_t)p.motors.low * (p.duration - age) / p.duration);
-			const uint16_t high = (uint16_t)((uint32_t)p.motors.high * (p.duration - age) / p.duration);
+			const uint32_t fadeAge = age > p.hold ? age - p.hold : 0;
+			const uint32_t fadeDuration = p.duration - p.hold;
+			const uint16_t low = (uint16_t)((uint32_t)p.motors.low * (fadeDuration - fadeAge) / fadeDuration);
+			const uint16_t high = (uint16_t)((uint32_t)p.motors.high * (fadeDuration - fadeAge) / fadeDuration);
 			if (low > native.low) native.low = low;
 			if (high > native.high) native.high = high;
 		}
@@ -71,6 +75,7 @@ class MotionTracker
 	}
 	static bool Climbing(uint32_t context) { return context == 5 || context == 7 || context == 8 || context == 9; }
 	static bool Ground(uint32_t context) { return context == 4 || context == 10 || context == 19; }
+	static bool SolidGround(uint32_t context) { return context == 4 || context == 19; }
 public:
 	void Reset() { ready = falling = settling = false; climbed = speed = 0; }
 	MotionEffect Update(MotionSample sample)
@@ -78,7 +83,9 @@ public:
 		MotionEffect result;
 		if (!sample.player || !Finite(sample.x) || !Finite(sample.y) || !Finite(sample.z)) { Reset(); return result; }
 		if ((sample.context < 4 || sample.context > 10) && sample.context != 19) { Reset(); return result; }
-		if (!ready || previous.player != sample.player || sample.time - previous.time > 250)
+		const uint32_t gap = sample.time - previous.time;
+		const bool shortFallGap = falling && gap <= 1000 && (sample.context == 6 || Ground(sample.context));
+		if (!ready || previous.player != sample.player || (gap > 250 && !shortFallGap))
 		{ Reset(); previous = sample; ready = true; return result; }
 		const uint32_t elapsed = sample.time - previous.time;
 		if (!elapsed) return result;
@@ -86,7 +93,9 @@ public:
 		const float distanceSquared = dx * dx + dy * dy + dz * dz;
 		if (distanceSquared > 400.0f) { Reset(); previous = sample; ready = true; return result; }
 		const float verticalSpeed = dz * (1000.0f / elapsed);
-		if ((sample.context == 6 || previous.context == 6) && !falling)
+		// A short ledge/beam drop can begin and end between input samples.
+		const bool supportDrop = (Climbing(previous.context) || previous.context == 10) && SolidGround(sample.context) && dz <= -0.10f;
+		if ((sample.context == 6 || previous.context == 6 || supportDrop) && !falling)
 		{
 			falling = true; peak = previous.z; speed = 0; fallStart = previous.time;
 		}
@@ -109,20 +118,23 @@ public:
 		else
 		{
 			climbed = 0;
-			// Narrow-object jumps can leave the airborne context before contact.
-			// Keep tracking until descent actually stops on a ground context.
-			if (falling && Ground(sample.context) && fabsf(verticalSpeed) < 0.8f)
+			// Ground entry is contact even when a roll/slope keeps moving vertically.
+			// Narrow-object jumps can exit the airborne state early: require braking there.
+			const bool groundEntry = SolidGround(sample.context) && !SolidGround(previous.context);
+			const bool braking = fabsf(verticalSpeed) < 0.8f || (speed >= 3.0f && verticalSpeed >= -speed * 0.5f);
+			if (falling && Ground(sample.context) && (groundEntry || braking))
 			{
 				const float drop = peak - sample.z;
 				if (!settling) { settling = true; settleStart = sample.time; }
-				if ((drop >= 0.10f && speed >= 0.5f) || sample.time - settleStart >= 300)
+				const bool contact = drop >= 0.10f && speed >= 0.5f && (sample.time - fallStart >= 40 || supportDrop);
+				if (contact || sample.time - settleStart >= 300)
 				{
-					if (drop >= 1.3f && speed >= 3.0f && sample.time - fallStart >= 40)
+					if (contact && drop >= 1.3f && speed >= 3.0f)
 					{
 						result.effect = Effect::Landing;
 						result.strength = Percent(50 + (unsigned int)(drop * 8.0f));
 					}
-					else if (drop >= 0.10f && speed >= 0.5f && sample.time - fallStart >= 40)
+					else if (contact)
 					{
 						result.effect = Effect::SoftLanding;
 						result.strength = 65;
