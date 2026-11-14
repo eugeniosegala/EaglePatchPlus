@@ -32,7 +32,7 @@ NAKED void Hook()
 	{
 		pushfd
 		pushad
-		sub esp, 32
+		sub esp, 48
 		movdqu [esp], xmm0
 		movdqu [esp + 16], xmm1
 		inc calls
@@ -53,14 +53,37 @@ NAKED void Hook()
 		ucomiss xmm1, maxFar
 		ja hook_done
 
-		// Preserve ordering for maps whose outer split is unusually close.
-		movss xmm0, [ebp - 0x60]
-		mulss xmm0, farFraction
-		divss xmm0, [ebp - 0x5c]
 		movss xmm1, multiplier
-		minss xmm1, xmm0
 		ucomiss xmm1, one
 		jbe hook_done
+
+		// Cap each split separately, preserving the outer limit and room
+		// between cascades without limiting the nearby split to the far one.
+		movss xmm0, [ebp - 0x60]
+		mulss xmm0, farFraction
+		movss xmm1, [ebp - 0x5c]
+		mulss xmm1, multiplier
+		minss xmm1, xmm0
+		ucomiss xmm1, [ebp - 0x5c]
+		jb hook_done
+		movss [esp + 40], xmm1
+
+		mulss xmm1, farFraction
+		movss xmm0, [ebp - 0x58]
+		mulss xmm0, multiplier
+		minss xmm0, xmm1
+		ucomiss xmm0, [ebp - 0x58]
+		jb hook_done
+		movss [esp + 36], xmm0
+
+		mulss xmm0, farFraction
+		movss xmm1, [ebp - 0x54]
+		mulss xmm1, multiplier
+		minss xmm1, xmm0
+		ucomiss xmm1, [ebp - 0x54]
+		jbe hook_done
+		movss [esp + 32], xmm1
+		divss xmm1, [ebp - 0x54]
 
 		cmp changes, 0
 		jne hook_scale
@@ -75,14 +98,11 @@ NAKED void Hook()
 		movss originalDistances[12], xmm0
 
 	hook_scale:
-		movss xmm0, [ebp - 0x54]
-		mulss xmm0, xmm1
+		movss xmm0, [esp + 32]
 		movss [ebp - 0x54], xmm0
-		movss xmm0, [ebp - 0x58]
-		mulss xmm0, xmm1
+		movss xmm0, [esp + 36]
 		movss [ebp - 0x58], xmm0
-		movss xmm0, [ebp - 0x5c]
-		mulss xmm0, xmm1
+		movss xmm0, [esp + 40]
 		movss [ebp - 0x5c], xmm0
 
 		cmp changes, 0
@@ -100,7 +120,7 @@ NAKED void Hook()
 	hook_done:
 		movdqu xmm0, [esp]
 		movdqu xmm1, [esp + 16]
-		add esp, 32
+		add esp, 48
 		popad
 		popfd
 
@@ -120,9 +140,9 @@ bool Install(HMODULE gameModule, unsigned int distanceMultiplier)
 		LogInfo("Shadow cascade distances: game's own (multiplier 1).");
 		return false;
 	}
-	if (distanceMultiplier < 2 || distanceMultiplier > 6)
+	if (distanceMultiplier < 2 || distanceMultiplier > 8)
 	{
-		LogWarn("ShadowCascadeDistanceMultiplier must be 1 through 6; cascade patch skipped.");
+		LogWarn("ShadowCascadeDistanceMultiplier must be 1 through 8; cascade patch skipped.");
 		return false;
 	}
 
@@ -174,7 +194,7 @@ void LogSummary()
 {
 	if (!detail::changes)
 		return;
-	LogInfo("Shadow cascade distances: %.3f / %.3f / %.3f / %.3f -> %.3f / %.3f / %.3f / %.3f (effective multiplier %.3f).",
+	LogInfo("Shadow cascade distances: %.3f / %.3f / %.3f / %.3f -> %.3f / %.3f / %.3f / %.3f (nearest cascade multiplier %.3f).",
 		detail::originalDistances[0], detail::originalDistances[1], detail::originalDistances[2], detail::originalDistances[3],
 		detail::scaledDistances[0], detail::scaledDistances[1], detail::scaledDistances[2], detail::scaledDistances[3], detail::effectiveMultiplier);
 }
