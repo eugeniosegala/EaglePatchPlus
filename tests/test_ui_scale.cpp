@@ -24,15 +24,17 @@ static Bytes Movie()
 }
 struct Value
 {
-	std::string text; float number = 0; bool root = false;
+	std::string text; float number = 0; int object = 0;
 	Value() = default;
 	explicit Value(float n) : number(n) {}
 	explicit Value(const char* s) : text(s) {}
 };
 // Independent interpreter for the AVM1 instructions emitted by the patch.
-static bool Execute(const Bytes& code, std::map<std::string, float>& root, const char* targetName = nullptr)
+static bool Execute(const Bytes& code, std::map<std::string, float>& root, const char* targetName = nullptr,
+	std::vector<std::map<std::string,float>>* clips = nullptr)
 {
 	std::vector<Value> stack;
+	std::map<std::string,Value> locals;
 	auto pop = [&]() { Value v = stack.back(); stack.pop_back(); return v; };
 	for (size_t pc = 0; pc < code.size();)
 	{
@@ -53,33 +55,73 @@ static bool Execute(const Bytes& code, std::map<std::string, float>& root, const
 			else return false;
 			pc = end;
 		}
-		else if (op == 0x1c) { if (stack.empty()) return false; auto name = pop().text; if (name != "_root" && !(targetName && name == "target")) return false; Value v; v.root = true; stack.push_back(v); }
+		else if (op == 0x1c)
+		{
+			if (stack.empty()) return false; auto name = pop().text;
+			if (name == "_root" || (targetName && (name == "target" || name == targetName))) { Value v; v.object = 1; stack.push_back(v); }
+			else if (locals.count(name)) stack.push_back(locals[name]); else return false;
+		}
 		else if (op == 0x4e)
 		{
-			if (stack.size() < 2) return false; Value key = pop(), obj = pop(); if (!obj.root) return false;
-			stack.push_back(targetName && key.text == "_name" ? Value(targetName) : Value(root[key.text]));
+			if (stack.size() < 2) return false; Value key = pop(), obj = pop(), v; if (!obj.object) return false;
+			if (obj.object == 1 && clips && key.text == "MessageDisplay") v.object = 2;
+			else if (obj.object == 2 && clips) v.object = 3;
+			else if (obj.object == 3 && clips)
+			{
+				if (key.text == "length") v.number = float(clips->size());
+				else { if (key.number < 0 || key.number >= clips->size()) return false; v.object = 4 + int(key.number); }
+			}
+			else if (obj.object >= 4 && clips) v.number = (*clips)[obj.object-4][key.text];
+			else v = targetName && key.text == "_name" ? Value(targetName) : Value(root[key.text]);
+			stack.push_back(v);
 		}
 		else if (op == 0x4f)
 		{
-			if (stack.size() < 3) return false; Value v = pop(), key = pop(), obj = pop(); if (!obj.root) return false;
-			root[key.text] = v.number;
+			if (stack.size() < 3) return false; Value v = pop(), key = pop(), obj = pop(); if (!obj.object) return false;
+			if (obj.object >= 4 && clips) (*clips)[obj.object-4][key.text] = v.number; else root[key.text] = v.number;
 		}
 		else if (op == 0x0c || op == 0x0a)
 		{
 			if (stack.size() < 2) return false; float b = pop().number, a = pop().number;
 			stack.push_back(Value(op == 0x0c ? a * b : a + b));
 		}
-		else if (op == 0x9d)
+		else if (op == 0x9d || op == 0x99)
 		{
-			if (end - pc != 2 || stack.empty()) return false;
+			if (end - pc != 2 || (op == 0x9d && stack.empty())) return false;
 			const int offset = (int16_t)U16(&code[pc]); pc = end;
-			if (pop().number != 0) { if (offset < 0 || size_t(offset) > code.size() - pc) return false; pc += offset; }
+			if (op == 0x99 || pop().number != 0) { const int dest = int(pc) + offset; if (dest < 0 || dest > int(code.size())) return false; pc = size_t(dest); }
 		}
+		else if (op == 0x3c || op == 0x1d) { if (stack.size() < 2) return false; Value v=pop(),key=pop(); locals[key.text]=v; }
+		else if (op == 0x50) { if (stack.empty()) return false; stack.push_back(Value(pop().number + 1)); }
+		else if (op == 0x48) { if (stack.size() < 2) return false; float b=pop().number,a=pop().number; stack.push_back(Value(float(a<b))); }
 		else if (op == 0x49) { if (stack.size() < 2) return false; Value b = pop(), a = pop(); stack.push_back(Value(float(a.text == b.text))); }
 		else if (op == 0x12) { if (stack.empty()) return false; stack.push_back(Value(float(pop().number == 0))); }
 		else return false;
 	}
 	return false;
+}
+static void MessageTests()
+{
+	Bytes holder; Property(holder,"_x",1,-640,"MessageDisplay_all_mc"); Property(holder,"_y",1,-360,"MessageDisplay_all_mc"); holder.push_back(0);
+	std::map<std::string,float> panel={{"_x",96},{"_y",258}};
+	CHECK(Execute(holder,panel,"MessageDisplay_all_mc"));
+	CHECK(320+0.5f*panel["_x"]==48 && 180+0.5f*panel["_y"]==129);
+	const char* arrays[] = {"arrBottomCenterMovieClips","arrRightMovieClips"};
+	const float offsets[][2] = {{640,720},{1280,0}};
+	for (unsigned i=0; i<2; ++i)
+	{
+		Bytes actions = MessageArrayActions(arrays[i],0.5f,offsets[i][0],offsets[i][1]);
+		std::map<std::string,float> root;
+		std::vector<std::map<std::string,float>> clips;
+		CHECK(Execute(actions,root,nullptr,&clips)); // No active message.
+		clips = {{{"_x",540},{"_y",257}},{{"_x",10},{"_y",20}}};
+		CHECK(Execute(actions,root,nullptr,&clips));
+		CHECK(clips[0]["_x"] == 540+offsets[i][0] && clips[0]["_y"] == 257+offsets[i][1]);
+		CHECK(clips[1]["_x"] == 10+offsets[i][0] && clips[1]["_y"] == 20+offsets[i][1]);
+		auto once=clips; CHECK(Execute(actions,root,nullptr,&clips)); CHECK(clips==once);
+		clips.push_back({{"_x",30},{"_y",40}}); CHECK(Execute(actions,root,nullptr,&clips));
+		CHECK(clips[0]==once[0] && clips[1]==once[1]); CHECK(clips[2]["_x"] == 30+offsets[i][0] && clips[2]["_y"] == 40+offsets[i][1]);
+	}
 }
 static void ComponentTests()
 {
@@ -104,7 +146,7 @@ static void TransformTests()
 {
 	struct Case { const char* name; float x, y; };
 	const Case cases[] = {{"TitleMenu",320,180},{"PauseMenu",320,180},{"HudMiniMap",640,360},
-		{"HudControlsManager",640,0},{"HudHealthBar",0,0},{"HudMissionState",0,0},{"HudMoneyComponent",0,360}};
+		{"HudControlsManager",640,0},{"HudHealthBar",0,0},{"HudMissionState",0,0},{"AFSMessageDisplay",320,180},{"HudMoneyComponent",0,360}};
 	for (const auto& c : cases)
 	{
 		float x, y; Anchor(c.name,x,y); Bytes actions = Actions(0.5f,1280*x,720*y);
@@ -182,11 +224,11 @@ static void HookTests()
 #endif
 int main(int argc, char** argv)
 {
-	TransformTests(); ParserTests(); ComponentTests();
+	TransformTests(); ParserTests(); ComponentTests(); MessageTests();
 #ifdef _WIN32
 	HookTests();
 #endif
-	if (argc==2) { std::ifstream f(argv[1],std::ios::binary); Bytes b((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>()),out; CHECK(Patch(b.data(),b.size(),0.5f,"TitleMenu",out)); printf("Real movie: %u -> %u bytes\n",(unsigned)b.size(),(unsigned)out.size()); }
+	if (argc>=2) { std::ifstream f(argv[1],std::ios::binary); Bytes b((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>()),out; CHECK(Patch(b.data(),b.size(),0.5f,argc>2?argv[2]:"TitleMenu",out)); printf("Real movie: %u -> %u bytes\n",(unsigned)b.size(),(unsigned)out.size()); }
 	if (failures) return 1;
 	puts("UI scale tests passed: movie validation, AVM1 transforms, corner anchors, replay guard and native hook lifetime."); return 0;
 }

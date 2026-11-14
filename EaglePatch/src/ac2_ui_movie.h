@@ -79,6 +79,52 @@ inline Bytes ComponentListener(float scale, float width, float height)
 	PushString(actions, "addListener"); actions.push_back(0x52); actions.push_back(0x17);
 	return actions;
 }
+inline Bytes MessageArrayActions(const char* array, float scale, float x, float y)
+{
+	Bytes actions, adjust;
+	PushString(actions, "clips"); Root(actions); PushString(actions, "MessageDisplay"); actions.push_back(0x4e);
+	PushString(actions, array); actions.push_back(0x4e); actions.push_back(0x3c);
+	PushString(actions, "index"); PushNumber(actions, 0); actions.push_back(0x3c);
+	const size_t loop = actions.size();
+	Variable(actions, "index"); Variable(actions, "clips"); PushString(actions, "length"); actions.push_back(0x4e);
+	actions.push_back(0x48); actions.push_back(0x12);
+	actions.push_back(0x9d); Put16(actions, 2); const size_t exit = actions.size(); Put16(actions, 0);
+	PushString(actions, "target"); Variable(actions, "clips"); Variable(actions, "index"); actions.push_back(0x4e); actions.push_back(0x3c);
+	Property(adjust, "_x", 1, x, "target"); Property(adjust, "_y", 1, y, "target");
+	Variable(adjust, "target"); PushString(adjust, marker); PushNumber(adjust, scale); adjust.push_back(0x4f);
+	Variable(actions, "target"); PushString(actions, marker); actions.push_back(0x4e);
+	actions.push_back(0x9d); Put16(actions, 2); Put16(actions, (uint16_t)adjust.size());
+	actions.insert(actions.end(), adjust.begin(), adjust.end());
+	PushString(actions, "index"); Variable(actions, "index"); actions.push_back(0x50); actions.push_back(0x1d);
+	actions.push_back(0x99); Put16(actions, 2); Put16(actions, (uint16_t)(int16_t)(int(loop) - int(actions.size() + 2)));
+	const uint16_t skip = (uint16_t)(actions.size() - exit - 2);
+	actions[exit] = (unsigned char)skip; actions[exit + 1] = (unsigned char)(skip >> 8);
+	actions.push_back(0); return actions;
+}
+inline Bytes MessageListeners(float scale, float width, float height)
+{
+	// The controller creates new clips for each message; run after its event listener,
+	// rather than polling every frame or moving the shared message container.
+	struct Message { const char* event; const char* array; float x, y; };
+	const Message messages[] = {{"SET_BOTTOM_CENTER_MESSAGE","arrBottomCenterMovieClips",0.5f,1},
+		{"SET_RIGHT_MESSAGE","arrRightMovieClips",1,0}};
+	Bytes actions;
+	// Anchor the shared text holder at the upper left. Full-screen mission/credit
+	// animations attached beside it retain the root's centered transform.
+	Property(actions, "_x", 1, -0.5f * width * (1 - scale) / scale, "MessageDisplay_all_mc");
+	Property(actions, "_y", 1, -0.5f * height * (1 - scale) / scale, "MessageDisplay_all_mc");
+	for (const auto& message : messages)
+	{
+		Bytes function = MessageArrayActions(message.array, scale, message.x * width * (1 - scale) / scale, message.y * height * (1 - scale) / scale);
+		PushString(actions, "onEvent"); actions.push_back(0x9b); Put16(actions, 5);
+		actions.push_back(0); Put16(actions, 0); Put16(actions, (uint16_t)function.size());
+		actions.insert(actions.end(), function.begin(), function.end());
+		PushNumber(actions, 1); actions.push_back(0x43);
+		PushNumber(actions, 1); Variable(actions, "ExtendedEvents"); PushString(actions, message.event); actions.push_back(0x4e);
+		PushString(actions, "addListener"); actions.push_back(0x52); actions.push_back(0x17);
+	}
+	return actions;
+}
 inline Bytes Actions(float scale, float x, float y, const Bytes& extras = Bytes())
 {
 	// AVM1 GetVariable/GetMember/SetMember; see Adobe's SWF 10 format specification.
@@ -149,8 +195,9 @@ inline bool Patch(const unsigned char* data, size_t size, float scale, const cha
 	float ax, ay; Anchor(type, ax, ay);
 	ax = (bounds[0] + (bounds[1] - bounds[0]) * ax) / 20.0f;
 	ay = (bounds[2] + (bounds[3] - bounds[2]) * ay) / 20.0f;
-	const Bytes extras = !strcmp(type, "MultiComponentShowingFireItem") ?
-		ComponentListener(scale, (bounds[1] - bounds[0]) / 20.0f, (bounds[3] - bounds[2]) / 20.0f) : Bytes();
+	const float width = (bounds[1] - bounds[0]) / 20.0f, height = (bounds[3] - bounds[2]) / 20.0f;
+	const Bytes extras = !strcmp(type, "MultiComponentShowingFireItem") ? ComponentListener(scale, width, height) :
+		!strcmp(type, "AFSMessageDisplay") ? MessageListeners(scale, width, height) : Bytes();
 	Bytes actions = Actions(scale, ax, ay, extras), tag;
 	Put16(tag, (12 << 6) | 63); Put32(tag, (uint32_t)actions.size()); tag.insert(tag.end(), actions.begin(), actions.end());
 	output.reserve(size + tag.size());
