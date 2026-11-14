@@ -10,6 +10,7 @@
 #include "../shared/logger.h"
 #include "ac2_shadow_cascades.h"
 #include "ac2_fov.h"
+#include "ac2_rumble.h"
 
 //#define INCLUDE_CONSOLE // add ability to allocate console window
 
@@ -336,6 +337,7 @@ struct PadProxyPC : Pad
 		}
 
 		UpdateTimeStamps();
+		ac2_rumble::Update(joyConnected, padXenon ? padXenon->m_PadIndex : 0, selectedPad == Joy1);
 	}
 };
 static_assert(sizeof(PadProxyPC) == 0x1660, "PadProxyPC");
@@ -522,6 +524,15 @@ void patch()
 
 	ac2_shadows::Install(GetModuleHandle(NULL), get_private_profile_int("ShadowCascadeDistanceMultiplier", 6));
 	ac2_fov::Install(GetModuleHandle(NULL), get_private_profile_float("FOVMultiplier", "1.0"));
+	if (!get_private_profile_bool("DisableXInputPatch", FALSE))
+	{
+		ac2_rumble::Config rumble;
+		rumble.enabled = get_private_profile_bool("EnhancedRumble", TRUE) != 0;
+		rumble.combat = get_private_profile_int("CombatRumbleStrength", 70);
+		rumble.landing = get_private_profile_int("LandingRumbleStrength", 80);
+		rumble.climbing = get_private_profile_int("ClimbingRumbleStrength", 35);
+		ac2_rumble::Install(GetModuleHandle(NULL), rumble);
+	}
 
 	if (get_private_profile_bool("ImproveDrawDistance", TRUE))
 	{
@@ -707,6 +718,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
 	}
 	else if (fdwReason == DLL_PROCESS_DETACH)
 	{
+		ac2_rumble::Shutdown();
 		ac2_shadows::LogSummary();
 		ac2_fov::LogSummary();
 		ShutdownLogging();

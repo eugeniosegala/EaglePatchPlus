@@ -109,6 +109,9 @@ add_library(EaglePatchPlusAC2 SHARED
     EaglePatch/src/ac2_fov.cpp
     EaglePatch/src/ac2_fov.h
     EaglePatch/src/ac2_image.h
+    EaglePatch/src/ac2_rumble.cpp
+    EaglePatch/src/ac2_rumble.h
+    EaglePatch/src/ac2_rumble_effects.h
 )
 
 target_include_directories(EaglePatchPlusAC2 PRIVATE ${SHARED_INCLUDE_DIRS})
@@ -125,6 +128,7 @@ target_compile_definitions(EaglePatchPlusAC2 PRIVATE
 
 # MSVC-specific link requirements and settings
 target_link_libraries(EaglePatchPlusAC2 PRIVATE
+    user32
     $<$<CXX_COMPILER_ID:MSVC>:legacy_stdio_definitions>
 )
 
@@ -186,6 +190,9 @@ if(BUILD_TESTING)
     # Test the implementation with the plugin's /fp:fast; keep NaN checks in the harness strict.
     set_source_files_properties(tests/test_fov.cpp PROPERTIES COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>")
     add_test(NAME FovTests COMMAND FovTests)
+    add_executable(RumbleEffectsTests tests/test_rumble_effects.cpp)
+    target_compile_features(RumbleEffectsTests PRIVATE cxx_std_14)
+    add_test(NAME RumbleEffectsTests COMMAND RumbleEffectsTests)
 endif()
 # ------------------------------------------------------------------------------
 # Target: Package Release
