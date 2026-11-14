@@ -10,6 +10,7 @@ namespace movie
 {
 using Bytes = std::vector<unsigned char>;
 static const char marker[] = "EaglePatchPlus_UIScale_v1";
+static const char componentListener[] = "EaglePatchPlus_UIComponentListener_v1";
 inline uint16_t U16(const unsigned char* p) { return uint16_t(p[0] | (p[1] << 8)); }
 inline uint32_t U32(const unsigned char* p) { return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24); }
 inline void Put16(Bytes& b, uint16_t v) { b.push_back((unsigned char)v); b.push_back((unsigned char)(v >> 8)); }
@@ -67,16 +68,28 @@ inline Bytes ComponentListener(float scale, float width, float height)
 {
 	Bytes actions, function = ComponentActions(scale, width, height), header;
 	// Add a load listener alongside the game's listener, after its initialization completes.
+	Root(actions); PushString(actions, componentListener);
 	PushString(actions, "onLoadInit");
 	header.push_back(0); Put16(header, 1);
 	const char parameter[] = "target"; header.insert(header.end(), parameter, parameter + sizeof(parameter));
 	Put16(header, (uint16_t)function.size());
 	actions.push_back(0x9b); Put16(actions, (uint16_t)header.size());
 	actions.insert(actions.end(), header.begin(), header.end()); actions.insert(actions.end(), function.begin(), function.end());
-	PushNumber(actions, 1); actions.push_back(0x43); // {onLoadInit: function(target) {...}}
+	PushNumber(actions, 1); actions.push_back(0x43); actions.push_back(0x4f); // Save {onLoadInit: function(target) {...}}.
+	Root(actions); PushString(actions, componentListener); actions.push_back(0x4e);
 	PushNumber(actions, 1); Root(actions); PushString(actions, "hudMasterScript"); actions.push_back(0x4e);
 	PushString(actions, "m_MovieClipLoader"); actions.push_back(0x4e);
 	PushString(actions, "addListener"); actions.push_back(0x52); actions.push_back(0x17);
+	// Subtitles can finish loading before this listener is attached. Only catch up
+	// after their inner clip exists, so an empty clip is not marked prematurely.
+	Bytes catchup;
+	Root(catchup); PushString(catchup, "HUD_Subtitles"); catchup.push_back(0x4e); PushNumber(catchup, 1);
+	Root(catchup); PushString(catchup, componentListener); catchup.push_back(0x4e);
+	PushString(catchup, "onLoadInit"); catchup.push_back(0x52); catchup.push_back(0x17);
+	Root(actions); PushString(actions, "HUD_Subtitles"); actions.push_back(0x4e);
+	PushString(actions, "mcSubtitles"); actions.push_back(0x4e); actions.push_back(0x12);
+	actions.push_back(0x9d); Put16(actions, 2); Put16(actions, (uint16_t)catchup.size());
+	actions.insert(actions.end(), catchup.begin(), catchup.end());
 	return actions;
 }
 inline Bytes MessageArrayActions(const char* array, float scale, float x, float y)

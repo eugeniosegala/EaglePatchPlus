@@ -136,7 +136,9 @@ static void ComponentTests()
 		auto once = clip; CHECK(Execute(function,clip,c.name)); CHECK(clip == once);
 	}
 	// Verify the listener's embedded function header and body independently.
-	Bytes listener = ComponentListener(0.5f,1280,720); size_t p = 3 + U16(listener.data()+1);
+	Bytes listener = ComponentListener(0.5f,1280,720); size_t p = 0;
+	while (p + 3 < listener.size() && !(listener[p] == 0x9b && U16(listener.data()+p+1) == 12)) ++p;
+	CHECK(p + 15 < listener.size()); if (p + 15 >= listener.size()) return;
 	CHECK(listener[p] == 0x9b); unsigned headerSize = U16(listener.data()+p+1); p += 3;
 	CHECK(listener[p] == 0 && U16(listener.data()+p+1) == 1 && !strcmp(reinterpret_cast<const char*>(listener.data()+p+3),"target"));
 	CHECK(U16(listener.data()+p+headerSize-2) == ComponentActions(0.5f,1280,720).size());
