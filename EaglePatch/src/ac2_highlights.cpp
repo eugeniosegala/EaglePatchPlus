@@ -1,9 +1,6 @@
 #include "ac2_highlights.h"
+#include "ac2_highlight_shader.h"
 #include "ac2_image.h"
-
-#include <algorithm>
-#include <stdint.h>
-#include <string.h>
 
 #include "patcher.h"
 #include "../shared/logger.h"
@@ -12,48 +9,42 @@ namespace ac2_highlights
 {
 namespace
 {
-struct Color
-{
-	float red, green, blue, alpha;
-};
+using CreatePixelShader = HRESULT (WINAPI*)(void*, const DWORD*, void**);
+volatile LONG patchedShaders = 0;
 
-using DrawMask = void (__thiscall*)(void*, void*, unsigned int, const Color*, const Color*, void*);
-DrawMask originalDrawMask = nullptr;
-
-bool IsFinite(float value)
+HRESULT WINAPI CreateWithoutTargetingRim(void* device, const DWORD* bytecode, void** pixelShader)
 {
-	uint32_t bits;
-	memcpy(&bits, &value, sizeof(bits));
-	return (bits & 0x7F800000u) != 0x7F800000u;
-}
-
-bool IsWhite(const Color& color)
-{
-	if (!IsFinite(color.red) || !IsFinite(color.green) || !IsFinite(color.blue))
-		return false;
-	const float maximum = std::max(color.red, std::max(color.green, color.blue));
-	const float minimum = std::min(color.red, std::min(color.green, color.blue));
-	return maximum > 0.0f && minimum >= maximum * 0.9f;
-}
-
-void __fastcall DrawWithoutWhiteHighlights(void* owner, void*, void* texture,
-	unsigned int mask, const Color* colors, const Color* unmaskedColor, void* context)
-{
-	if (!colors)
+	const auto create = reinterpret_cast<CreatePixelShader>((*static_cast<void***>(device))[106]);
+	std::vector<uint32_t> replacement;
+	try
 	{
-		originalDrawMask(owner, texture, mask, colors, unmaskedColor, context);
-		return;
+		MEMORY_BASIC_INFORMATION memory = {};
+		if (bytecode && (reinterpret_cast<uintptr_t>(bytecode) & 3) == 0 &&
+			VirtualQuery(bytecode, &memory, sizeof(memory)) == sizeof(memory) && memory.State == MEM_COMMIT &&
+			!(memory.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+		{
+			const uintptr_t end = reinterpret_cast<uintptr_t>(memory.BaseAddress) + memory.RegionSize;
+			const size_t readableWords = (end - reinterpret_cast<uintptr_t>(bytecode)) / sizeof(uint32_t);
+			const size_t limit = readableWords < 65536 ? readableWords : 65536;
+			shader::Rewrite(reinterpret_cast<const uint32_t*>(bytecode), limit, replacement);
+		}
 	}
-	__declspec(align(16)) Color filtered[8];
-	memcpy(filtered, colors, sizeof(filtered));
-	for (unsigned int index = 0; index < 8; ++index)
+	catch (...)
 	{
-		if ((mask & (1u << index)) && IsWhite(filtered[index]))
-			filtered[index] = {};
+		replacement.clear();
 	}
-	// Both glow and blurred outlines use this palette. Keep the native clear,
-	// draw and resource transitions running so old masks cannot persist on screen.
-	originalDrawMask(owner, texture, mask, filtered, unmaskedColor, context);
+	if (!replacement.empty())
+	{
+		const HRESULT result = create(device, reinterpret_cast<const DWORD*>(replacement.data()), pixelShader);
+		if (SUCCEEDED(result))
+		{
+			if (InterlockedIncrement(&patchedShaders) == 1)
+				LogInfo("DisableWhiteHighlights: character targeting-rim shader patched successfully.");
+			return result;
+		}
+		LogWarn("DisableWhiteHighlights: modified shader rejected (0x%08lX); using original.", static_cast<unsigned long>(result));
+	}
+	return create(device, bytecode, pixelShader);
 }
 }
 
@@ -66,54 +57,32 @@ bool Install(HMODULE gameModule, bool disableWhiteHighlights)
 		LogWarn("White highlight removal: this executable layout is not verified; skipped.");
 		return false;
 	}
-	unsigned char* target = reinterpret_cast<unsigned char*>(gameModule) + 0x12CAEE0;
+	// The engine's sole CreatePixelShader call: preserve its native allocation,
+	// ownership and COM ABI, substituting only the function loaded into EAX.
+	unsigned char* target = reinterpret_cast<unsigned char*>(gameModule) + 0x11DED3B;
 	static const unsigned char expected[] = {
-		0x53, 0x8B, 0xDC, 0x83, 0xEC, 0x08, 0x83, 0xE4, 0xF0, 0x83, 0xC4, 0x04,
-		0x55, 0x8B, 0x6B, 0x04, 0x89, 0x6C, 0x24, 0x04, 0x8B, 0xEC, 0x6A, 0xFF
+		0x8B, 0x81, 0xA8, 0x01, 0x00, 0x00, 0xFF, 0xD0, 0x85, 0xF6, 0x8B, 0x45, 0x08
 	};
 	if (!ac2_image::IsReadable(target, sizeof(expected)) || memcmp(target, expected, sizeof(expected)) != 0)
 	{
-		LogWarn("White highlight removal: mask renderer code changed or already hooked; skipped.");
+		LogWarn("White highlight removal: pixel shader creation code changed or already hooked; skipped.");
 		return false;
 	}
-	const size_t displaced = 6;
-	unsigned char* trampoline = static_cast<unsigned char*>(VirtualAlloc(nullptr, displaced + 5,
-		MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
-	if (!trampoline)
-		return false;
-	memcpy(trampoline, target, displaced);
-	trampoline[displaced] = 0xE9;
-	uint32_t offset = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(target + displaced) -
-		reinterpret_cast<uintptr_t>(trampoline + displaced + 5));
-	memcpy(trampoline + displaced + 1, &offset, sizeof(offset));
+	unsigned char replacement[] = {0xB8, 0, 0, 0, 0, 0x90};
+	const uint32_t function = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&CreateWithoutTargetingRim));
+	memcpy(replacement + 1, &function, sizeof(function));
 	DWORD oldProtect = 0;
-	if (!VirtualProtect(trampoline, displaced + 5, PAGE_EXECUTE_READ, &oldProtect))
-	{
-		VirtualFree(trampoline, 0, MEM_RELEASE);
+	if (!Unprotect_internal(target, sizeof(replacement), &oldProtect))
 		return false;
-	}
-	FlushInstructionCache(GetCurrentProcess(), trampoline, displaced + 5);
-	if (!Unprotect_internal(target, displaced, &oldProtect))
+	memcpy(target, replacement, sizeof(replacement));
+	if (!Protect_internal(target, sizeof(replacement), oldProtect))
 	{
-		VirtualFree(trampoline, 0, MEM_RELEASE);
-		return false;
-	}
-	originalDrawMask = reinterpret_cast<DrawMask>(trampoline);
-	unsigned char jump[displaced] = {0xE9, 0, 0, 0, 0, 0x90};
-	offset = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&DrawWithoutWhiteHighlights) -
-		reinterpret_cast<uintptr_t>(target + 5));
-	memcpy(jump + 1, &offset, sizeof(offset));
-	memcpy(target, jump, sizeof(jump));
-	if (!Protect_internal(target, displaced, oldProtect))
-	{
-		memcpy(target, expected, displaced);
-		Protect_internal(target, displaced, oldProtect);
-		originalDrawMask = nullptr;
-		VirtualFree(trampoline, 0, MEM_RELEASE);
+		memcpy(target, expected, sizeof(replacement));
+		Protect_internal(target, sizeof(replacement), oldProtect);
 		LogWarn("White highlight removal: protection restore failed; original code restored.");
 		return false;
 	}
-	LogInfo("DisableWhiteHighlights: enabled (white/grey glow and outline palettes; matching object highlights included).");
+	LogInfo("DisableWhiteHighlights: enabled (character targeting-rim intensity; shader creation only).");
 	return true;
 }
 }
