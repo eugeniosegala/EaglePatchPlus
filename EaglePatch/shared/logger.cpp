@@ -10,6 +10,11 @@ static bool g_ConsoleLoggingEnabled = false;
 static wchar_t g_LogFilePath[MAX_PATH] = { 0 };
 static CRITICAL_SECTION g_LogCriticalSection;
 static bool g_CsInitialized = false;
+// Each launch rewrites the log; this caps one session so per-event messages
+// can never grow it without bound on small drives.
+static const size_t kLogFileLimit = 256 * 1024;
+static size_t g_LogFileBytes = 0;
+static bool g_LogFileFull = false;
 
 static void FormatHelper(char* dst, size_t dstSize, const char* format, ...)
 {
@@ -45,6 +50,8 @@ void InitLogging(HMODULE hModule, bool enableFileLog, bool enableConsoleLog)
 	}
 
 	g_LoggingInitialized = true;
+	g_LogFileBytes = 0;
+	g_LogFileFull = false;
 
 	if (g_FileLoggingEnabled && g_LogFilePath[0] != L'\0')
 	{
@@ -113,12 +120,21 @@ void LogMessageV(LogLevel level, const char* format, va_list args)
 		printf("%s", formattedLine);
 	}
 
-	if (g_FileLoggingEnabled && g_LogFilePath[0] != L'\0')
+	if (g_FileLoggingEnabled && g_LogFilePath[0] != L'\0' && !g_LogFileFull)
 	{
+		// Text mode writes each newline as CRLF, one byte more than in memory.
+		const size_t length = strlen(formattedLine) + 1;
+		const char* text = formattedLine;
+		if (g_LogFileBytes + length > kLogFileLimit)
+		{
+			text = "[Log size limit of 256 KB reached; further messages are suppressed until the next launch.]\n";
+			g_LogFileFull = true;
+		}
+		g_LogFileBytes += length;
 		FILE* f = _wfopen(g_LogFilePath, L"a");
 		if (f)
 		{
-			fputs(formattedLine, f);
+			fputs(text, f);
 			fflush(f);
 			fclose(f);
 		}

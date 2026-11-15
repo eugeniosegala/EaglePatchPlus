@@ -152,6 +152,9 @@ static void TestDiagnosticLogger()
 	LogInfo("Test info message %d", 42);
 	LogWarn("Test warning message with param %s", "warning_sample");
 	LogError("Test error message with code 0x%X", 0xDEAD);
+	// A runaway per-event message stops at the per-session size limit.
+	for (int i = 0; i < 6000; ++i)
+		LogInfo("Repeated runtime event %d with enough text to fill the log quickly", i);
 
 	ShutdownLogging();
 	assert(IsLoggingEnabled() == false);
@@ -160,17 +163,23 @@ static void TestDiagnosticLogger()
 	assert(logPath != nullptr && logPath[0] != L'\0');
 
 	// Verify log file exists and contains expected tags
-	FILE* f = _wfopen(logPath, L"r");
+	FILE* f = _wfopen(logPath, L"rb");
+	assert(f != nullptr);
 	if (f)
 	{
-		char buffer[2048] = { 0 };
+		static char buffer[512 * 1024] = { 0 };
 		size_t bytesRead = fread(buffer, 1, sizeof(buffer) - 1, f);
 		fclose(f);
+		buffer[bytesRead] = 0;
 		assert(bytesRead > 0);
+		assert(bytesRead <= 256 * 1024 + 512);
 		assert(strstr(buffer, "[INFO]") != nullptr);
 		assert(strstr(buffer, "[WARN]") != nullptr);
 		assert(strstr(buffer, "[ERROR]") != nullptr);
 		assert(strstr(buffer, "Test info message 42") != nullptr);
+		assert(strstr(buffer, "Repeated runtime event 0 ") != nullptr);
+		assert(strstr(buffer, "Repeated runtime event 5999 ") == nullptr);
+		assert(strstr(buffer, "Log size limit of 256 KB reached") != nullptr);
 		assert(strstr(buffer, "=== EaglePatch+ Log Closed ===") != nullptr);
 		DeleteFileW(logPath);
 	}

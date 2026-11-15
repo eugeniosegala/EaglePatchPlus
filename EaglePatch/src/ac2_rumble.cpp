@@ -99,7 +99,11 @@ void Trigger(Effect effect, unsigned int scale, uint32_t now)
 	if (mixer.Trigger(effect, strength * Percent(scale) / 100, now))
 	{
 		static const char* names[] = {"none", "attack", "parry", "landing", "climbing", "ledge grab", "small landing"};
-		LogInfo("Enhanced rumble: %s.", names[(unsigned int)effect]);
+		// Confirm each effect works without logging every hit, landing or grip.
+		static volatile LONG logged[sizeof(names) / sizeof(names[0])] = {};
+		const unsigned int index = (unsigned int)effect;
+		if (index < sizeof(names) / sizeof(names[0]) && InterlockedIncrement(&logged[index]) <= 3)
+			LogInfo("Enhanced rumble: %s.", names[index]);
 	}
 }
 uintptr_t __fastcall ResponseHook(void* listener, void*, void* event)
@@ -204,7 +208,9 @@ void Update(bool connected, unsigned int controller, bool active)
 	uintptr_t player = 0, entity = 0;
 	const bool valid = connected && active && controller < 4 && Foreground() && Player(sample, player, entity);
 	EnterCriticalSection(&lock);
-	if (valid && !controllerActive) LogInfo("Enhanced rumble: controller slot %u active.", controller);
+	// Reactivates after every menu, load or cutscene; note only the first few.
+	static unsigned int activations = 0;
+	if (valid && !controllerActive && ++activations <= 3) LogInfo("Enhanced rumble: controller slot %u active.", controller);
 	if (!valid || !controllerActive || controllerIndex != controller || localPlayer != player)
 	{
 		mixer.Clear(); motion.Reset();
