@@ -163,7 +163,7 @@ static void SharedCanvasTests()
 	CHECK(canvas["_x"]==0 && canvas["_y"]==0 && canvas["_xscale"]==100 && canvas["_yscale"]==100);
 	// An unrelated indicator at the lower right keeps its full-size-canvas position.
 	CHECK(canvas["_x"]+1220*canvas["_xscale"]/100==1220 && canvas["_y"]+660*canvas["_yscale"]/100==660);
-	for (const auto* type : {"MultiComponentShowingFireItem","AFSMessageDisplay"})
+	for (const auto* type : {"MultiComponentShowingFireItem","AFSMessageDisplay","SystemMessageDisplay"})
 	{
 		Bytes b=Movie(),out; CHECK(Patch(b.data(),b.size(),0.5f,type,out));
 		const size_t frame=b.size()-4, length=U32(out.data()+frame+2);
@@ -173,6 +173,35 @@ static void SharedCanvasTests()
 		// Execute the production prefix until it reaches a child API/helper function.
 		CHECK(!Execute(code,root)); CHECK(root==before);
 	}
+}
+static void HudMessageTests()
+{
+	// Stock SystemMessageDisplay places the diamond (mcHudMess) at 1101.5,459.5,
+	// directly above HudMiniMap's All_mc at 1100,587.75 on the same 1280x720 stage.
+	auto actions = [](float scale) { Bytes code = HudMessageActions(scale,1280,720); code.push_back(0); return code; };
+	for (float scale : {0.5f,0.75f})
+	{
+		std::map<std::string,float> icon={{"_x",1101.5f},{"_y",459.5f},{"_xscale",100},{"_yscale",100}};
+		CHECK(Execute(actions(scale),icon,"mcHudMess"));
+		CHECK(icon["_xscale"]==100*scale && icon["_yscale"]==100*scale);
+		CHECK(icon["_x"]==1101.5f*scale+1280*(1-scale) && icon["_y"]==459.5f*scale+720*(1-scale));
+		// Same transform as the minimap's root, so the icon keeps its place above the map.
+		const float mapX=1100*scale+1280*(1-scale), mapY=587.75f*scale+720*(1-scale);
+		CHECK(icon["_x"]-mapX==1.5f*scale && mapY-icon["_y"]==128.25f*scale);
+	}
+	// Only the HUD message clip is addressed; dialogs and the centred waiting popup are untouched.
+	for (const auto* other : {"mcPopupLoadingWaiting","mcPopup","mcPopupWaiting","mcUplayPopup"})
+	{
+		std::map<std::string,float> popup={{"_x",640},{"_y",360},{"_xscale",100},{"_yscale",100}};
+		auto before=popup; CHECK(!Execute(actions(0.5f),popup,other)); CHECK(popup==before);
+	}
+	// The production patch applies it once through the first-frame replay guard.
+	Bytes b=Movie(),out; CHECK(Patch(b.data(),b.size(),0.5f,"SystemMessageDisplay",out));
+	const size_t frame=b.size()-4, length=U32(out.data()+frame+2);
+	Bytes code(out.begin()+frame+6,out.begin()+frame+6+length);
+	std::map<std::string,float> icon={{"_x",1101.5f},{"_y",459.5f},{"_xscale",100},{"_yscale",100}};
+	CHECK(Execute(code,icon,"mcHudMess")); CHECK(icon["_x"]==1190.75f && icon["_y"]==589.75f && icon["_xscale"]==50);
+	auto once=icon; CHECK(Execute(code,icon,"mcHudMess")); CHECK(icon==once);
 }
 static void TransformTests()
 {
@@ -191,7 +220,7 @@ static void TransformTests()
 static void MenuTests()
 {
 	const char* stock[] = {"TitleMenu", "PauseMenu", "MapMenu", "MainMenu", "InventoryMenu", "DatabaseMenu",
-		"MissionActivatorMenu", "SystemMessageDisplay", "HudIconManager", "UnknownFireItem"};
+		"MissionActivatorMenu", "HudIconManager", "UnknownFireItem"};
 	const Bytes original = Movie();
 	for (const auto* type : stock)
 	{
@@ -200,7 +229,8 @@ static void MenuTests()
 		CHECK(output.empty() && source == original);
 	}
 	CHECK(!ShouldScale(nullptr));
-	CHECK(ShouldScale("HudHealthBar") && ShouldScale("HudMiniMap") && ShouldScale("AFSMessageDisplay") && ShouldScale("MultiComponentShowingFireItem"));
+	CHECK(ShouldScale("HudHealthBar") && ShouldScale("HudMiniMap") && ShouldScale("AFSMessageDisplay") && ShouldScale("MultiComponentShowingFireItem") &&
+		ShouldScale("SystemMessageDisplay"));
 }
 static void ParserTests()
 {
@@ -262,7 +292,7 @@ static void HookTests()
 	size_t once=retained; CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status); CHECK(retained==once);
 	CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),uint32_t(-1))==&status && status==-1); CHECK(retained==once*2);
 	CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status); CHECK(retained==once);
-	for (const auto* stock : {"TitleMenu", "PauseMenu", "MapMenu", "SystemMessageDisplay"})
+	for (const auto* stock : {"TitleMenu", "PauseMenu", "MapMenu", "HudIconManager"})
 	{
 		type[8]=reinterpret_cast<uintptr_t>(stock);
 		CHECK(entry(state,&status,b.data(),(uint32_t)b.size(),0)==&status);
@@ -277,7 +307,7 @@ static void HookTests()
 #endif
 int main(int argc, char** argv)
 {
-	TransformTests(); ParserTests(); ComponentTests(); MessageTests(); MenuTests(); SharedCanvasTests();
+	TransformTests(); ParserTests(); ComponentTests(); MessageTests(); MenuTests(); SharedCanvasTests(); HudMessageTests();
 #ifdef _WIN32
 	HookTests();
 #endif

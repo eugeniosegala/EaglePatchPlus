@@ -41,6 +41,12 @@ inline void Property(Bytes& actions, const char* key, float scale, float offset,
 	if (offset != 0) { PushNumber(actions, offset); actions.push_back(0x0a); }
 	actions.push_back(0x4f);
 }
+inline void AnchoredScale(Bytes& actions, const char* object, float scale, float x, float y)
+{
+	// Scale a clip about a stage point: each position becomes position * scale + offset.
+	Property(actions, "_xscale", scale, 0, object); Property(actions, "_yscale", scale, 0, object);
+	Property(actions, "_x", scale, x, object); Property(actions, "_y", scale, y, object);
+}
 inline Bytes ComponentActions(float scale, float width, float height)
 {
 	// Scale the known panels inside the full-size canvas, including asynchronously loaded movies.
@@ -50,9 +56,7 @@ inline Bytes ComponentActions(float scale, float width, float height)
 	for (const auto& component : components)
 	{
 		Bytes adjust;
-		Property(adjust, "_xscale", scale, 0, "target"); Property(adjust, "_yscale", scale, 0, "target");
-		Property(adjust, "_x", scale, component.x * width * (1 - scale), "target");
-		Property(adjust, "_y", scale, component.y * height * (1 - scale), "target");
+		AnchoredScale(adjust, "target", scale, component.x * width * (1 - scale), component.y * height * (1 - scale));
 		Variable(adjust, "target"); PushString(adjust, marker); PushNumber(adjust, scale); adjust.push_back(0x4f);
 		Variable(body, "target"); PushString(body, "_name"); body.push_back(0x4e);
 		PushString(body, component.name); body.push_back(0x49); body.push_back(0x12);
@@ -116,10 +120,14 @@ inline Bytes MessageArrayActions(const char* array, float scale, float x, float 
 }
 inline Bytes MessageHolderActions(float scale)
 {
-	Bytes actions;
-	Property(actions, "_xscale", scale, 0, "MessageDisplay_all_mc"); Property(actions, "_yscale", scale, 0, "MessageDisplay_all_mc");
-	Property(actions, "_x", scale, 0, "MessageDisplay_all_mc"); Property(actions, "_y", scale, 0, "MessageDisplay_all_mc");
-	return actions;
+	Bytes actions; AnchoredScale(actions, "MessageDisplay_all_mc", scale, 0, 0); return actions;
+}
+inline Bytes HudMessageActions(float scale, float width, float height)
+{
+	// SystemMessageDisplay places the save/loading diamond (mcHudMess) directly above the
+	// minimap. Scale it about the minimap's lower-right anchor so it stays above the smaller
+	// map; this movie's dialogs and centred waiting popups keep their stock layout.
+	Bytes actions; AnchoredScale(actions, "mcHudMess", scale, width * (1 - scale), height * (1 - scale)); return actions;
 }
 inline Bytes MessageListeners(float scale, float width, float height)
 {
@@ -171,7 +179,7 @@ inline bool ShouldScale(const char* type)
 	// Only verified gameplay HUD owners opt in. Full-screen menus, dialogs,
 	// world markers and unknown UI types always receive their original stream.
 	static const char* const hud[] = {"HudHealthBar", "HudMiniMap", "HudMissionState", "HudControlsManager",
-		"HudMoneyComponent", "MultiComponentShowingFireItem", "AFSMessageDisplay"};
+		"HudMoneyComponent", "MultiComponentShowingFireItem", "AFSMessageDisplay", "SystemMessageDisplay"};
 	if (type) for (const auto* name : hud) if (!strcmp(type, name)) return true;
 	return false;
 }
@@ -224,10 +232,11 @@ inline bool Patch(const unsigned char* data, size_t size, float scale, const cha
 	ay = (bounds[2] + (bounds[3] - bounds[2]) * ay) / 20.0f;
 	const float width = (bounds[1] - bounds[0]) / 20.0f, height = (bounds[3] - bounds[2]) / 20.0f;
 	const Bytes extras = !strcmp(type, "MultiComponentShowingFireItem") ? ComponentListener(scale, width, height) :
-		!strcmp(type, "AFSMessageDisplay") ? MessageListeners(scale, width, height) : Bytes();
-	// Keep shared canvases stock so unrelated symbols and full-screen animations
+		!strcmp(type, "AFSMessageDisplay") ? MessageListeners(scale, width, height) :
+		!strcmp(type, "SystemMessageDisplay") ? HudMessageActions(scale, width, height) : Bytes();
+	// Keep shared canvases stock so unrelated symbols, dialogs and full-screen animations
 	// retain their coordinates. Only their named gameplay panels are scaled.
-	const bool sharedCanvas = !strcmp(type, "MultiComponentShowingFireItem") || !strcmp(type, "AFSMessageDisplay");
+	const bool sharedCanvas = !extras.empty();
 	Bytes actions = Actions(scale, ax, ay, extras, !sharedCanvas), tag;
 	Put16(tag, (12 << 6) | 63); Put32(tag, (uint32_t)actions.size()); tag.insert(tag.end(), actions.begin(), actions.end());
 	output.reserve(size + tag.size());
