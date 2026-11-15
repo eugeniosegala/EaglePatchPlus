@@ -72,7 +72,7 @@ static bool Execute(const Bytes& code, std::map<std::string, float>& root, const
 				else { if (key.number < 0 || key.number >= clips->size()) return false; v.object = 4 + int(key.number); }
 			}
 			else if (obj.object >= 4 && clips) v.number = (*clips)[obj.object-4][key.text];
-			else v = targetName && key.text == "_name" ? Value(targetName) : Value(root[key.text]);
+			else { auto value = root.find(key.text); v = targetName && key.text == "_name" ? Value(targetName) : Value(value == root.end() ? 0 : value->second); }
 			stack.push_back(v);
 		}
 		else if (op == 0x4f)
@@ -102,10 +102,12 @@ static bool Execute(const Bytes& code, std::map<std::string, float>& root, const
 }
 static void MessageTests()
 {
-	Bytes holder; Property(holder,"_x",1,-640,"MessageDisplay_all_mc"); Property(holder,"_y",1,-360,"MessageDisplay_all_mc"); holder.push_back(0);
-	std::map<std::string,float> panel={{"_x",96},{"_y",258}};
+	Bytes holder = MessageHolderActions(0.5f); holder.push_back(0);
+	std::map<std::string,float> panel={{"_x",96},{"_y",258},{"_xscale",100},{"_yscale",100}};
 	CHECK(Execute(holder,panel,"MessageDisplay_all_mc"));
-	CHECK(320+0.5f*panel["_x"]==48 && 180+0.5f*panel["_y"]==129);
+	CHECK(panel["_x"]==48 && panel["_y"]==129 && panel["_xscale"]==50 && panel["_yscale"]==50);
+	// Same global text position as before, with no transform on the shared canvas.
+	CHECK(panel["_x"]+0.5f*(540+640)==638 && panel["_y"]+0.5f*(257+720)==617.5f);
 	const char* arrays[] = {"arrBottomCenterMovieClips","arrRightMovieClips"};
 	const float offsets[][2] = {{640,720},{1280,0}};
 	for (unsigned i=0; i<2; ++i)
@@ -125,14 +127,24 @@ static void MessageTests()
 }
 static void ComponentTests()
 {
-	struct Case { const char* name; float x, y; };
-	const Case cases[] = {{"HUD_Controls",640,-360},{"HUD_Equipment",-640,360},{"HUD_Money",-640,360},{"HUD_Subtitles",0,360},{"Unrelated",0,0}};
-	for (const auto& c : cases)
+	struct Case { const char* name; float x, y; bool scale; };
+	const Case cases[] = {{"HUD_Controls",1,0,true},{"HUD_Equipment",0,1,true},{"HUD_Money",0,1,true},
+		{"HUD_Subtitles",0.5f,1,true},{"HUD_Party",0.5f,0.5f,true},{"mcLoading",0,0,false},{"mcLogo",0,0,false},{"Unrelated",0,0,false}};
+	for (float scale : {0.5f,0.75f}) for (const auto& c : cases)
 	{
-		Bytes function = ComponentActions(0.5f,1280,720);
-		std::map<std::string,float> clip = {{"_x",20},{"_y",40},{"_xscale",100},{"_yscale",100}};
-		CHECK(Execute(function,clip,c.name)); CHECK(clip["_x"] == 20+c.x && clip["_y"] == 40+c.y);
-		CHECK(clip["_xscale"] == 100 && clip["_yscale"] == 100); // Shared root already provides the scale.
+		Bytes function = ComponentActions(scale,1280,720);
+		std::map<std::string,float> clip = {{"_x",20},{"_y",40},{"_xscale",80},{"_yscale",120}};
+		auto original = clip;
+		CHECK(Execute(function,clip,c.name));
+		if (c.scale)
+		{
+			CHECK(clip["_x"] == 20*scale+c.x*1280*(1-scale) && clip["_y"] == 40*scale+c.y*720*(1-scale));
+			CHECK(clip["_xscale"] == 80*scale && clip["_yscale"] == 120*scale);
+			// Equivalent to the old canvas-plus-compensation transform for known panels.
+			CHECK(clip["_x"] == 640*(1-scale)+scale*(20+(c.x-0.5f)*1280*(1-scale)/scale));
+			CHECK(clip["_y"] == 360*(1-scale)+scale*(40+(c.y-0.5f)*720*(1-scale)/scale));
+		}
+		else CHECK(clip == original);
 		auto once = clip; CHECK(Execute(function,clip,c.name)); CHECK(clip == once);
 	}
 	// Verify the listener's embedded function header and body independently.
@@ -143,6 +155,24 @@ static void ComponentTests()
 	CHECK(listener[p] == 0 && U16(listener.data()+p+1) == 1 && !strcmp(reinterpret_cast<const char*>(listener.data()+p+3),"target"));
 	CHECK(U16(listener.data()+p+headerSize-2) == ComponentActions(0.5f,1280,720).size());
 	CHECK(!memcmp(listener.data()+p+headerSize,ComponentActions(0.5f,1280,720).data(),ComponentActions(0.5f,1280,720).size()));
+}
+static void SharedCanvasTests()
+{
+	std::map<std::string,float> canvas={{"_x",0},{"_y",0},{"_xscale",100},{"_yscale",100}};
+	CHECK(Execute(Actions(0.5f,640,360,Bytes(),false),canvas));
+	CHECK(canvas["_x"]==0 && canvas["_y"]==0 && canvas["_xscale"]==100 && canvas["_yscale"]==100);
+	// An unrelated indicator at the lower right keeps its full-size-canvas position.
+	CHECK(canvas["_x"]+1220*canvas["_xscale"]/100==1220 && canvas["_y"]+660*canvas["_yscale"]/100==660);
+	for (const auto* type : {"MultiComponentShowingFireItem","AFSMessageDisplay"})
+	{
+		Bytes b=Movie(),out; CHECK(Patch(b.data(),b.size(),0.5f,type,out));
+		const size_t frame=b.size()-4, length=U32(out.data()+frame+2);
+		Bytes code(out.begin()+frame+6,out.begin()+frame+6+length);
+		std::map<std::string,float> root={{"_x",20},{"_y",40},{"_xscale",100},{"_yscale",100}};
+		auto before=root;
+		// Execute the production prefix until it reaches a child API/helper function.
+		CHECK(!Execute(code,root)); CHECK(root==before);
+	}
 }
 static void TransformTests()
 {
@@ -247,7 +277,7 @@ static void HookTests()
 #endif
 int main(int argc, char** argv)
 {
-	TransformTests(); ParserTests(); ComponentTests(); MessageTests(); MenuTests();
+	TransformTests(); ParserTests(); ComponentTests(); MessageTests(); MenuTests(); SharedCanvasTests();
 #ifdef _WIN32
 	HookTests();
 #endif

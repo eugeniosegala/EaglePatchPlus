@@ -43,22 +43,22 @@ inline void Property(Bytes& actions, const char* key, float scale, float offset,
 }
 inline Bytes ComponentActions(float scale, float width, float height)
 {
-	// The master loads these full-screen HUD movies asynchronously into separate clips.
-	// Compensate their shared root's centered transform in the parent's coordinates.
+	// Scale the known panels inside the full-size canvas, including asynchronously loaded movies.
 	struct Component { const char* name; float x, y; };
-	const Component components[] = {{"HUD_Controls",1,0},{"HUD_Equipment",0,1},{"HUD_Money",0,1},{"HUD_Subtitles",0.5f,1}};
+	const Component components[] = {{"HUD_Controls",1,0},{"HUD_Equipment",0,1},{"HUD_Money",0,1},{"HUD_Subtitles",0.5f,1},{"HUD_Party",0.5f,0.5f}};
 	Bytes body, actions;
 	for (const auto& component : components)
 	{
 		Bytes adjust;
-		Property(adjust, "_x", 1, (component.x - 0.5f) * width * (1 - scale) / scale, "target");
-		Property(adjust, "_y", 1, (component.y - 0.5f) * height * (1 - scale) / scale, "target");
+		Property(adjust, "_xscale", scale, 0, "target"); Property(adjust, "_yscale", scale, 0, "target");
+		Property(adjust, "_x", scale, component.x * width * (1 - scale), "target");
+		Property(adjust, "_y", scale, component.y * height * (1 - scale), "target");
+		Variable(adjust, "target"); PushString(adjust, marker); PushNumber(adjust, scale); adjust.push_back(0x4f);
 		Variable(body, "target"); PushString(body, "_name"); body.push_back(0x4e);
 		PushString(body, component.name); body.push_back(0x49); body.push_back(0x12);
 		body.push_back(0x9d); Put16(body, 2); Put16(body, (uint16_t)adjust.size());
 		body.insert(body.end(), adjust.begin(), adjust.end());
 	}
-	Variable(body, "target"); PushString(body, marker); PushNumber(body, scale); body.push_back(0x4f);
 	Variable(actions, "target"); PushString(actions, marker); actions.push_back(0x4e);
 	actions.push_back(0x9d); Put16(actions, 2); Put16(actions, (uint16_t)body.size());
 	actions.insert(actions.end(), body.begin(), body.end()); actions.push_back(0);
@@ -114,6 +114,13 @@ inline Bytes MessageArrayActions(const char* array, float scale, float x, float 
 	actions[exit] = (unsigned char)skip; actions[exit + 1] = (unsigned char)(skip >> 8);
 	actions.push_back(0); return actions;
 }
+inline Bytes MessageHolderActions(float scale)
+{
+	Bytes actions;
+	Property(actions, "_xscale", scale, 0, "MessageDisplay_all_mc"); Property(actions, "_yscale", scale, 0, "MessageDisplay_all_mc");
+	Property(actions, "_x", scale, 0, "MessageDisplay_all_mc"); Property(actions, "_y", scale, 0, "MessageDisplay_all_mc");
+	return actions;
+}
 inline Bytes MessageListeners(float scale, float width, float height)
 {
 	// The controller creates new clips for each message; run after its event listener,
@@ -121,11 +128,7 @@ inline Bytes MessageListeners(float scale, float width, float height)
 	struct Message { const char* event; const char* array; float x, y; };
 	const Message messages[] = {{"SET_BOTTOM_CENTER_MESSAGE","arrBottomCenterMovieClips",0.5f,1},
 		{"SET_RIGHT_MESSAGE","arrRightMovieClips",1,0}};
-	Bytes actions;
-	// Anchor the shared text holder at the upper left. Full-screen mission/credit
-	// animations attached beside it retain the root's centered transform.
-	Property(actions, "_x", 1, -0.5f * width * (1 - scale) / scale, "MessageDisplay_all_mc");
-	Property(actions, "_y", 1, -0.5f * height * (1 - scale) / scale, "MessageDisplay_all_mc");
+	Bytes actions = MessageHolderActions(scale);
 	for (const auto& message : messages)
 	{
 		Bytes function = MessageArrayActions(message.array, scale, message.x * width * (1 - scale) / scale, message.y * height * (1 - scale) / scale);
@@ -138,13 +141,16 @@ inline Bytes MessageListeners(float scale, float width, float height)
 	}
 	return actions;
 }
-inline Bytes Actions(float scale, float x, float y, const Bytes& extras = Bytes())
+inline Bytes Actions(float scale, float x, float y, const Bytes& extras = Bytes(), bool scaleRoot = true)
 {
 	// AVM1 GetVariable/GetMember/SetMember; see Adobe's SWF 10 format specification.
 	// The marker prevents repeated first-frame actions from compounding the scale.
 	Bytes body, actions;
-	Property(body, "_xscale", scale, 0); Property(body, "_yscale", scale, 0);
-	Property(body, "_x", scale, x * (1 - scale)); Property(body, "_y", scale, y * (1 - scale));
+	if (scaleRoot)
+	{
+		Property(body, "_xscale", scale, 0); Property(body, "_yscale", scale, 0);
+		Property(body, "_x", scale, x * (1 - scale)); Property(body, "_y", scale, y * (1 - scale));
+	}
 	body.insert(body.end(), extras.begin(), extras.end());
 	Root(body); PushString(body, marker); PushNumber(body, scale); body.push_back(0x4f);
 	Root(actions); PushString(actions, marker); actions.push_back(0x4e);
@@ -219,7 +225,10 @@ inline bool Patch(const unsigned char* data, size_t size, float scale, const cha
 	const float width = (bounds[1] - bounds[0]) / 20.0f, height = (bounds[3] - bounds[2]) / 20.0f;
 	const Bytes extras = !strcmp(type, "MultiComponentShowingFireItem") ? ComponentListener(scale, width, height) :
 		!strcmp(type, "AFSMessageDisplay") ? MessageListeners(scale, width, height) : Bytes();
-	Bytes actions = Actions(scale, ax, ay, extras), tag;
+	// Keep shared canvases stock so unrelated symbols and full-screen animations
+	// retain their coordinates. Only their named gameplay panels are scaled.
+	const bool sharedCanvas = !strcmp(type, "MultiComponentShowingFireItem") || !strcmp(type, "AFSMessageDisplay");
+	Bytes actions = Actions(scale, ax, ay, extras, !sharedCanvas), tag;
 	Put16(tag, (12 << 6) | 63); Put32(tag, (uint32_t)actions.size()); tag.insert(tag.end(), actions.begin(), actions.end());
 	output.reserve(size + tag.size());
 	output.insert(output.end(), data, data + frame); output.insert(output.end(), tag.begin(), tag.end()); output.insert(output.end(), data + frame, data + size);
