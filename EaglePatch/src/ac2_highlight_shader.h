@@ -82,6 +82,77 @@ inline bool FindIntensity(const unsigned char* table, size_t bytes, unsigned int
 	return true;
 }
 
+// A palette channel is a white/grey/silver highlight when it is finite, visibly
+// lit and nearly colourless (a slight blue or warm tint included). Saturated
+// channels such as red, blue or gold Eagle Vision highlights are kept.
+inline bool IsNeutralHighlight(float red, float green, float blue, float baseRed, float baseGreen, float baseBlue)
+{
+	const float values[6] = {red, green, blue, baseRed, baseGreen, baseBlue};
+	for (float value : values)
+	{
+		uint32_t bits;
+		memcpy(&bits, &value, sizeof(bits));
+		if ((bits & 0x7F800000u) == 0x7F800000u)
+			return false;
+	}
+	const float maximum = red > green ? (red > blue ? red : blue) : (green > blue ? green : blue);
+	const float minimum = red < green ? (red < blue ? red : blue) : (green < blue ? green : blue);
+	if (maximum < 0.05f || maximum - minimum > maximum * 0.3f)
+		return false;
+	return red != baseRed || green != baseGreen || blue != baseBlue;
+}
+
+// Measures a shader model 2+ token stream in place (any alignment). Returns the
+// word count through the end token, or 0 when the stream is not complete.
+inline size_t Length(const unsigned char* data, size_t availableBytes)
+{
+	const size_t available = availableBytes / sizeof(uint32_t);
+	if (!data || available < 2)
+		return 0;
+	const uint32_t version = Read32(data);
+	if ((version & 0xFFFF0000) != 0xFFFF0000 || ((version >> 8) & 0xFF) < 2)
+		return 0;
+	for (size_t index = 1; index < available;)
+	{
+		const uint32_t token = Read32(data + index * sizeof(uint32_t));
+		if (token == 0x0000FFFF)
+			return index + 1;
+		const size_t length = (token & 0xFFFF) == 0xFFFE ? (token >> 16) & 0x7FFF : (token >> 24) & 0xF;
+		if (length > available - index - 1)
+			return 0;
+		index += length + 1;
+	}
+	return 0;
+}
+
+// True when the shader's constant table names any targeting-rim parameter.
+inline bool HasTargeting(const uint32_t* words, size_t availableWords)
+{
+	static const char name[] = "TargettingRimFX";
+	if (!words || availableWords < 2 || (words[0] & 0xFFFF0000) != 0xFFFF0000)
+		return false;
+	for (size_t index = 1; index < availableWords;)
+	{
+		const uint32_t token = words[index];
+		if ((token & 0xFFFF) != 0xFFFE)
+			return false;
+		const size_t length = (token >> 16) & 0x7FFF;
+		if (length > availableWords - index - 1)
+			return false;
+		if (length && words[index + 1] == 0x42415443)
+		{
+			const unsigned char* table = reinterpret_cast<const unsigned char*>(words + index + 2);
+			const size_t bytes = (length - 1) * sizeof(uint32_t);
+			for (size_t offset = 0; offset + sizeof(name) - 1 <= bytes; ++offset)
+				if (memcmp(table + offset, name, sizeof(name) - 1) == 0)
+					return true;
+			return false;
+		}
+		index += length + 1;
+	}
+	return false;
+}
+
 inline bool Rewrite(const uint32_t* words, size_t availableWords, std::vector<uint32_t>& output)
 {
 	output.clear();

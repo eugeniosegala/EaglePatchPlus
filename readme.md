@@ -63,7 +63,7 @@ EaglePatch+AC2 is an ASI plugin that fixes a number of issues in Assassin's Cree
 ## Features
 - Improved shadow map size from 1024 to 4096 (only when shadow quality is maxed out in game's settings; can be disabled in ini)
 - Extended shadow cascade distances (up to 8x, configurable in ini; Steam Digital UPlay only)
-- Optional NPC targeting glow removal (DisableWhiteHighlights in ini; Steam Digital UPlay only)
+- Optional white/silver NPC selection glow and outline removal (DisableWhiteHighlights in ini; Steam Digital UPlay only)
 - Added configurable camera FOV multiplier and optional FOV lock (FOVMultiplier, LockFOV in ini; Steam Digital UPlay only)
 - Added optional HUD scaling (`UIScale=0.5` for half size; the save icon stays above the minimap; menus, dialogs and loading screens unchanged; Steam Digital UPlay only)
 - Draw distance maxed out for buildings, peds and flags (can be disabled in ini)
